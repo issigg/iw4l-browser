@@ -143,28 +143,6 @@ pub(crate) fn cycle(dvars: &mut UiMenuDvars, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Apply saved choices once at startup (web only; no-op elsewhere or when nothing is saved).
-pub(crate) fn load_saved(dvars: &mut UiMenuDvars) {
-    if !cfg!(target_family = "wasm") {
-        return;
-    }
-    let Ok(text) = vfs::fs::read_to_string(SAVE_PATH) else {
-        return;
-    };
-    for line in text.lines() {
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        if let Some(tweak) = TWEAKS
-            .iter()
-            .find(|tweak| tweak.dvar == name.trim() && !tweak.dvar.starts_with("ui_"))
-            && tweak.values.iter().any(|(v, _)| *v == value.trim())
-        {
-            dvars.set(tweak.dvar, value.trim());
-        }
-    }
-}
-
 fn save(dvars: &UiMenuDvars) {
     if !cfg!(target_family = "wasm") {
         return;

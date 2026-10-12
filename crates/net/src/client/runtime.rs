@@ -151,7 +151,7 @@ pub struct LastAdoptedSnapshot {
 
     pub applied_this_frame: bool,
 
-    pub adopted_at: Option<std::time::Instant>,
+    pub adopted_at: Option<web_time::Instant>,
 }
 
 impl LastAdoptedSnapshot {
@@ -602,7 +602,7 @@ pub fn reconcile_prediction(
             pending.clear_acknowledged(acked);
         }
         last_adopted.applied_this_frame = true;
-        last_adopted.adopted_at = Some(std::time::Instant::now());
+        last_adopted.adopted_at = Some(web_time::Instant::now());
         if let Some(old_next) = last_adopted.next_snap.take() {
             last_adopted.snap = Some(old_next);
         }

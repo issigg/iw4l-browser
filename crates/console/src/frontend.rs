@@ -23,7 +23,6 @@ pub(crate) struct FrontendState {
     password_joining: bool,
     lobby_password: String,
     rules_seeded: bool,
-    tweaks_loaded: bool,
 }
 
 #[derive(SystemParam)]
@@ -676,10 +675,6 @@ pub(crate) fn route(
                 "PRIVATE LOBBY"
             }),
     );
-    if !state.tweaks_loaded {
-        state.tweaks_loaded = true;
-        crate::tweaks::load_saved(&mut dvars);
-    }
     crate::tweaks::refresh_labels(&mut dvars);
     for (label, text, dvar) in [
         ("ui_lobby_enemybots", "ENEMY BOTS", sim::ENEMY_BOTS_DVAR),
