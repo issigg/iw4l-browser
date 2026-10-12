@@ -1,5 +1,6 @@
+use vfs::fs::{self, File, OpenOptions};
+
 use std::{
-    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -148,6 +149,52 @@ pub(crate) fn save(
             persistence.retry_at = Some(Instant::now() + SAVE_RETRY_DELAY);
         }
     }
+}
+
+/// WASM-SPIKE: on the web, grant maximum level and unlocks once per page load when the main menu
+/// has its progression data, so classes can be built straight away. The account (and so this
+/// state) persists in the browser, so later loads find the rank already maxed and do nothing.
+pub(crate) fn auto_unlock_web(
+    mut done: Local<bool>,
+    screen: Res<frame::AppScreen>,
+    world: Res<State<frame::MatchScope>>,
+    role: Res<frame::RuntimeRole>,
+    account: Option<Res<LocalAccount>>,
+    persistence: Res<AccountPersistence>,
+    player_data: Res<sim::LocalPlayerData>,
+    mut out: MessageWriter<crate::ConsoleCommand>,
+) {
+    if !cfg!(target_family = "wasm") || *done {
+        return;
+    }
+    if *screen != frame::AppScreen::MainMenu
+        || *world.get() == frame::MatchScope::Live
+        || !matches!(
+            *role,
+            frame::RuntimeRole::Listen | frame::RuntimeRole::Client
+        )
+        || account.is_none()
+        || persistence.path.is_none()
+        || !player_data.unlock_data_ready()
+    {
+        return;
+    }
+    *done = true;
+    if player_data
+        .progression
+        .as_ref()
+        .is_some_and(|progression| progression.rank >= 69)
+    {
+        return;
+    }
+    diag::info!(Sim, "web: granting maximum level (unlock all)");
+    out.write(crate::ConsoleCommand {
+        name: "unlock".into(),
+        args: vec!["all".into()],
+        raw: "unlock all".into(),
+        background: true,
+        interactive: false,
+    });
 }
 
 pub(crate) fn route_unlock_commands(

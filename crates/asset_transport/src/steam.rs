@@ -1,3 +1,4 @@
+use vfs::VfsExt as _;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -70,7 +71,7 @@ pub fn link_steam_games(root: &GamesRoot) -> SteamProbe {
         let mut valid = Vec::new();
         for library in &libraries {
             let path = library.join("steamapps").join("common").join(folder);
-            let candidate = if !path.is_dir() {
+            let candidate = if !path.vdir() {
                 SteamCandidate::Missing
             } else if has_game(std::slice::from_ref(&path), game) {
                 valid.push(probe.tried.len());
@@ -147,11 +148,11 @@ fn steam_libraries() -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     let mut libraries = Vec::new();
     for install in installs {
-        let listed = std::fs::read_to_string(install.join("steamapps/libraryfolders.vdf"))
+        let listed = vfs::fs::read_to_string(install.join("steamapps/libraryfolders.vdf"))
             .map(|vdf| steam_library_paths(&vdf))
             .unwrap_or_else(|_| Vec::new());
         for library in std::iter::once(install).chain(listed) {
-            if let Ok(canonical) = std::fs::canonicalize(&library)
+            if let Ok(canonical) = vfs::fs::canonicalize(&library)
                 && seen.insert(canonical)
             {
                 libraries.push(library);
@@ -165,7 +166,7 @@ fn steam_libraries() -> Vec<PathBuf> {
 fn has_game(roots: &[PathBuf], game: ZoneGame) -> bool {
     roots.iter().any(|root| {
         crate::discover::folder_holds_game(root, game)
-            || std::fs::read_dir(root).is_ok_and(|entries| {
+            || vfs::fs::read_dir(root).is_ok_and(|entries| {
                 entries
                     .flatten()
                     .any(|entry| crate::discover::folder_holds_game(&entry.path(), game))
@@ -175,7 +176,7 @@ fn has_game(roots: &[PathBuf], game: ZoneGame) -> bool {
 
 #[cfg(unix)]
 fn create_shortcut(link: &Path, target: &Path) -> Result<(), String> {
-    let target = std::fs::canonicalize(target)
+    let target = vfs::fs::canonicalize(target)
         .map_err(|error| format!("cannot resolve {}: {error}", target.display()))?;
     std::os::unix::fs::symlink(&target, link)
         .map_err(|error| format!("cannot create {}: {error}", link.display()))
@@ -204,11 +205,11 @@ fn has_game(roots: &[PathBuf], game: ZoneGame) -> bool {
 
 #[cfg(windows)]
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    match std::fs::read_dir(dir) {
+    match vfs::fs::read_dir(dir) {
         Ok(entries) => entries
             .flatten()
             .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
+            .filter(|path| path.vdir())
             .collect(),
         Err(error) => {
             if error.kind() != std::io::ErrorKind::NotFound {
@@ -258,7 +259,7 @@ fn steam_libraries() -> Vec<PathBuf> {
     .flatten()
     {
         let install = PathBuf::from(install.to_string_lossy().replace('/', "\\"));
-        if install.is_dir() && !installs.contains(&install) {
+        if install.vdir() && !installs.contains(&install) {
             installs.push(install);
         }
     }
@@ -266,7 +267,7 @@ fn steam_libraries() -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     for install in &installs {
         let vdf = install.join("steamapps").join("libraryfolders.vdf");
-        let listed = match std::fs::read_to_string(&vdf) {
+        let listed = match vfs::fs::read_to_string(&vdf) {
             Ok(text) => steam_library_paths(&text),
             Err(error) => {
                 diag::warn!(Zone, "steam libraries {}: {error}", vdf.display());
@@ -274,7 +275,7 @@ fn steam_libraries() -> Vec<PathBuf> {
             }
         };
         for library in std::iter::once(install.clone()).chain(listed) {
-            if let Ok(canonical) = std::fs::canonicalize(&library)
+            if let Ok(canonical) = vfs::fs::canonicalize(&library)
                 && seen.insert(canonical)
             {
                 libraries.push(library);

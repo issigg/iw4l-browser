@@ -1,0 +1,275 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>iw4l-browser</title>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111;color:#ccc;font:13px monospace}canvas{width:100vw;height:100vh;display:block;outline:none;touch-action:none}</style>
+<script>
+// WASM-SPIKE: mirror console output to the dev server so it can be read as a file.
+const q=[];let t=0;
+function flush(){t=0;if(!q.length)return;const b=q.splice(0).join('\n');fetch('/__log',{method:'POST',body:b,keepalive:true}).catch(()=>{});}
+for(const k of ['log','info','warn','error']){const o=console[k].bind(console);console[k]=(...a)=>{o(...a);q.push('[page:'+k+'] '+a.map(x=>x&&x.stack||String(x)).join(' '));if(!t)t=setTimeout(flush,200);};}
+addEventListener('error',e=>console.error('window error',e.message));
+addEventListener('unhandledrejection',e=>console.error('unhandled rejection',String(e.reason)));
+</script>
+<canvas id=iw4l-canvas tabindex=0></canvas>
+<div id=boot style="position:fixed;left:0;right:0;top:40%;z-index:10;text-align:center;color:#ddd;font:15px monospace"><div id=boottext>starting...</div><div style="margin:10px auto;width:420px;height:10px;background:#333;border-radius:5px;overflow:hidden"><div id=bootbar style="width:0%;height:100%;background:#7c7"></div></div></div>
+<div id=cachebox style="position:fixed;left:8px;bottom:6px;z-index:11;color:#777;font:11px monospace;display:none"><span id=cachetext>cache: ...</span> &middot; <button id=cacheclear type=button style="all:unset;cursor:pointer;text-decoration:underline">clear</button></div>
+<div id=fps style="position:fixed;top:4px;right:8px;z-index:9;color:#9f9;background:#0008;padding:2px 6px;font:12px monospace;pointer-events:none">fps --</div>
+<script type=module>
+import {diag,addError,startupCheck,browserBrand} from './page-diag.js';
+import {showFatal,toast,setHint,initControls} from './page-ui.js';
+// Page half of the worker protocol (see PROTOCOL.md). The engine runs in worker.js on an OffscreenCanvas.
+const canvas=document.getElementById('iw4l-canvas');
+let loadedMs=0;
+const bootText=document.getElementById('boottext'),bootBar=document.getElementById('bootbar'),bootBox=document.getElementById('boot'),fpsEl=document.getElementById('fps');
+const cacheBox=document.getElementById('cachebox'),cacheText=document.getElementById('cachetext');
+const qs=new URLSearchParams(location.search);
+const map=qs.get('map')||null;
+const cacheAlways=qs.get('cache')==='1';
+const dpr=()=>window.devicePixelRatio||1;
+// Render scale: fraction of CSS px (applied instead of devicePixelRatio), or 'dpr' = native device pixels.
+const QKEY='iw4l.quality';
+function parseQ(v){if(v==null)return null;v=String(v).trim().toLowerCase();if(v==='dpr'||v==='native')return 'dpr';const n=parseFloat(v);if(!isFinite(n)||n<=0)return null;return String(Math.min(2,Math.max(0.25,n)));}
+let quality=parseQ(qs.get('scale'))||(()=>{try{return parseQ(localStorage.getItem(QKEY));}catch(_){return null;}})()||'dpr';
+const curScale=()=>quality==='dpr'?dpr():parseFloat(quality);
+const physSize=()=>{const s=curScale();return {width:Math.max(1,Math.round(canvas.clientWidth*s)),height:Math.max(1,Math.round(canvas.clientHeight*s)),scale:s};};
+let lastSize=physSize();
+diag.render=()=>({width:lastSize.width,height:lastSize.height,scale:lastSize.scale,quality});
+
+// ---- startup check (before anything is transferred) ----
+const chk=await startupCheck();
+if(!chk.ok){
+  showFatal('Cannot start: this browser is missing required features',chk.problems);
+  console.error('startup check failed: '+chk.problems.join(' | '));
+  throw new Error('startup check failed');
+}
+for(const w of diag.warnings)console.warn('startup: '+w);
+
+let worker;
+try{worker=new Worker('./worker.js',{type:'module'});}
+catch(e){showFatal('Cannot start: module workers are not supported',['new Worker(..., {type:"module"}) failed: '+(e&&e.message||e),'Use a recent desktop Chrome or Edge.']);throw e;}
+worker.onerror=(e)=>{showFail('worker error: '+(e.message||'failed to load worker.js'));};
+const post=(m,tr)=>worker.postMessage(m,tr||[]);
+// Files the main-thread build kept in localStorage (profile, classes, settings); the worker has no
+// localStorage, so hand them over once for it to move into its store.
+const legacyFs=(()=>{const out=[];try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(!k||!k.startsWith('iw4fs:'))continue;
+  const bin=atob(localStorage.getItem(k));const bytes=new Uint8Array(bin.length);for(let j=0;j<bin.length;j++)bytes[j]=bin.charCodeAt(j);out.push([k.slice(6),bytes]);}}catch(e){}return out;})();
+// Game files: null in server mode, or {mode:'folder',name,files} from the folder picker (may be absent).
+let games=null;
+try{const {getGamesSource}=await import('./folder-picker.js');games=await getGamesSource();}
+catch(e){games=null;console.warn('folder picker unavailable, using server mode: '+(e&&e.message||e));}
+diag.gamesMode=games?'folder':'server';
+{const s=physSize();lastSize=s;const off=canvas.transferControlToOffscreen();post({type:'boot',canvas:off,map,width:s.width,height:s.height,scale:s.scale,legacyFs,games},[off]);}
+canvas.focus();
+
+function showFail(msg){bootBox.style.display='';bootText.style.color='#f66';bootText.style.whiteSpace='pre-wrap';bootText.textContent=msg;console.error('engine failed: '+msg);}
+
+// ---- input ----
+const locked=()=>document.pointerLockElement===canvas;
+const active=()=>locked()||document.activeElement===canvas;
+const isBrowserShortcut=(e)=>e.ctrlKey||e.metaKey||e.code==='F5'||e.code==='F11'||e.code==='F12'||(e.altKey&&e.code!=='AltLeft'&&e.code!=='AltRight');
+function onKey(down){return(e)=>{
+  if(!active())return;
+  if(!isBrowserShortcut(e))e.preventDefault();
+  post({type:'key',code:e.code,key:e.key,down,repeat:e.repeat});
+};}
+addEventListener('keydown',onKey(true));
+addEventListener('keyup',onKey(false));
+canvas.addEventListener('contextmenu',(e)=>e.preventDefault());
+canvas.addEventListener('mousedown',(e)=>{
+  e.preventDefault();canvas.focus();
+  if(wantLock&&!locked())tryLock(true);
+  post({type:'mousebtn',button:e.button,down:true});
+});
+addEventListener('mouseup',(e)=>{if(!active()&&e.target!==canvas)return;e.preventDefault();post({type:'mousebtn',button:e.button,down:false});});
+canvas.addEventListener('mousemove',(e)=>{
+  const s=curScale(),d=dpr(),r=canvas.getBoundingClientRect();
+  post({type:'mousepos',x:(e.clientX-r.left)*s,y:(e.clientY-r.top)*s});
+  post({type:'motion',dx:e.movementX*d,dy:e.movementY*d});
+});
+canvas.addEventListener('wheel',(e)=>{e.preventDefault();post({type:'wheel',dx:e.deltaX,dy:e.deltaY,line:e.deltaMode===1});},{passive:false});
+addEventListener('focus',()=>post({type:'focus',focused:true}));
+addEventListener('blur',()=>post({type:'focus',focused:false}));
+canvas.addEventListener('mouseenter',()=>post({type:'cursorin',inside:true}));
+canvas.addEventListener('mouseleave',()=>post({type:'cursorin',inside:false}));
+function sendResize(){const s=physSize();lastSize=s;post({type:'resize',width:s.width,height:s.height,scale:s.scale});}
+new ResizeObserver(sendResize).observe(canvas);
+addEventListener('resize',()=>{const s=physSize();if(s.width!==lastSize.width||s.height!==lastSize.height||s.scale!==lastSize.scale)sendResize();});
+function setQuality(v){const q=parseQ(v)||'dpr';quality=q;try{localStorage.setItem(QKEY,q);}catch(_){}sendResize();}
+initControls({
+  quality:{get:()=>quality,set:setQuality,options:[['dpr','Native (device pixels)'],['1','1x'],['0.75','0.75x'],['0.5','0.5x']]},
+  focusCanvas:()=>canvas.focus(),getRender:()=>lastSize});
+// While hidden the browser stops animation frames; tell the engine so it keeps ticking on a timer.
+const sendVisibility=()=>post({type:'visibility',hidden:document.hidden});
+document.addEventListener('visibilitychange',sendVisibility);sendVisibility();
+
+// ---- cursor ----
+// wantLock: the engine asked for pointer lock (in-game). Stays true until it asks for unlock, so after
+// Esc we show the hint again and re-request only on a user gesture (mousedown).
+let wantLock=false,lockedOnce=false,lockByGesture=false;
+function updateHint(){setHint(wantLock&&!locked());}
+function tryLock(gesture){
+  lockByGesture=!!gesture;
+  try{const p=canvas.requestPointerLock();if(p&&p.catch)p.catch(()=>{/* pointerlockerror handles the message */});}
+  catch(_){}
+}
+document.addEventListener('pointerlockchange',()=>{
+  if(locked()){if(!lockedOnce){lockedOnce=true;toast('Press Esc to release the mouse',4000);}}
+  updateHint();
+});
+document.addEventListener('pointerlockerror',()=>{
+  addError('pointerlock','pointer lock request failed');
+  if(lockByGesture)toast('Could not capture the mouse (the browser refused). Click again in a moment.',4000);
+  updateHint();
+});
+function onCursor(m){
+  if(m.locked){wantLock=true;if(!locked())tryLock(false);canvas.style.cursor='none';}
+  else{wantLock=false;if(locked())document.exitPointerLock();canvas.style.cursor=m.visible?'':'none';}
+  updateHint();
+}
+
+// ---- cache button (boot box, or always with ?cache=1) ----
+let cacheInfo=null;
+cacheBox.style.display='';
+function renderCache(){if(cacheInfo)cacheText.textContent='cache: '+Math.round(cacheInfo.bytes/1048576)+' MiB';}
+document.getElementById('cacheclear').addEventListener('click',()=>{
+  if(confirm('Clear the engine cache (shaders, navigation, decoded images)? Your settings are kept. The next load will be slower.'))post({type:'cache-clear'});
+});
+
+// ---- worker messages ----
+let started=false;
+worker.onmessage=(e)=>{
+  const m=e.data;if(!m||!m.type)return;
+  if(m.type==='failed'||m.type==='panic')addError(m.type,m.message||m.text||'');
+  else if(m.type==='log'&&(m.level==='error'||m.level==='warn'))addError('worker.'+m.level,m.text);
+  switch(m.type){
+    case 'progress':bootText.style.color='';bootText.textContent=m.text;bootBar.style.width=Math.max(0,Math.min(100,m.pct)).toFixed(1)+'%';break;
+    case 'started':started=true;bootText.style.color='';bootText.textContent='starting engine...';break;
+    case 'failed':showFail(m.message);break;
+    case 'cursor':onCursor(m);break;
+    case 'fps':
+      diag.fps=m;if(m.memMB>diag.memPeakMB)diag.memPeakMB=m.memMB;
+      if(started){bootBox.style.display='none';if(!cacheAlways)cacheBox.style.display='none';}
+      fpsEl.textContent='fps '+m.fps.toFixed(1)+'  worst '+Math.round(m.worst)+'ms  mem '+Math.round(m.memMB)+'MB  '+lastSize.width+'x'+lastSize.height+(loadedMs?'  | loaded in '+(loadedMs/1000).toFixed(1)+' s':'');break;
+    case 'loaded':loadedMs=m.ms;diag.loadedMs=m.ms;break;
+    case 'cache-info':cacheInfo=m;diag.cache=m;renderCache();break;
+    case 'cache-cleared':cacheText.textContent='cache: cleared (reload to rebuild)';break;
+    case 'log':(console[m.level]||console.log)('[worker] '+m.text);break;
+    case 'audio-init':audioInit();break;
+    case 'audio-push':if(A.node)A.node.port.postMessage(m.samples,[m.samples.buffer]);break;
+    case 'audio-tone':audioTone(m.f,m.secs);break;
+  }
+};
+
+// ---- gamepads (see PROTOCOL.md 'Gamepads') ----
+const padLast=new Map(); // index -> {buttons:number[], axes:number[], id}
+const PAD_EPS=0.01;
+function padChanged(prev,buttons,axes){
+  if(!prev||prev.buttons.length!==buttons.length||prev.axes.length!==axes.length)return true;
+  for(let i=0;i<buttons.length;i++)if(Math.abs(buttons[i]-prev.buttons[i])>PAD_EPS)return true;
+  for(let i=0;i<axes.length;i++)if(Math.abs(axes[i]-prev.axes[i])>PAD_EPS)return true;
+  return false;
+}
+function pollPads(force){
+  let pads;
+  try{pads=navigator.getGamepads?navigator.getGamepads():[];}catch(_){return;}
+  const present=new Set();
+  for(const p of pads){
+    if(!p||!p.connected||p.mapping!=='standard')continue;
+    present.add(p.index);
+    const buttons=Array.from(p.buttons,(b)=>b.value),axes=Array.from(p.axes);
+    const prev=padLast.get(p.index);
+    if(force||padChanged(prev,buttons,axes)||(prev&&prev.id!==p.id)){
+      padLast.set(p.index,{buttons,axes,id:p.id});
+      post({type:'pad',index:p.index,id:p.id,connected:true,buttons,axes});
+    }
+  }
+  for(const [index,prev] of [...padLast]){
+    if(!present.has(index)){padLast.delete(index);post({type:'pad',index,id:prev.id,connected:false,buttons:[],axes:[]});}
+  }
+}
+addEventListener('gamepadconnected',()=>pollPads(false));
+addEventListener('gamepaddisconnected',()=>pollPads(false));
+(function padLoop(){if(!document.hidden)pollPads(false);requestAnimationFrame(padLoop);})();
+setInterval(()=>{if(document.hidden)pollPads(false);},250);
+
+// ---- audio (ported from crates/audio/src/web_audio.rs) ----
+const WORKLET=`
+class Iw4Out extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.q = []; this.head = 0; this.off = 0; this.queued = 0;
+    this.consumed = 0; this.n = 0; this.tone = null;
+    this.port.onmessage = (e) => {
+      const d = e.data;
+      if (d && d.tone) { this.tone = { f: d.tone.f, left: Math.floor(d.tone.secs * sampleRate), ph: 0 }; return; }
+      this.q.push(d); this.queued += d.length >> 1;
+    };
+  }
+  process(inputs, outputs) {
+    const out = outputs[0], l = out[0], r = out[1] || out[0], n = l.length;
+    let i = 0;
+    while (i < n && this.head < this.q.length) {
+      const c = this.q[this.head];
+      const have = (c.length >> 1) - this.off, take = Math.min(have, n - i);
+      for (let k = 0; k < take; k++) {
+        l[i + k] = c[(this.off + k) * 2]; r[i + k] = c[(this.off + k) * 2 + 1];
+      }
+      i += take; this.off += take; this.queued -= take; this.consumed += take;
+      if (this.off >= (c.length >> 1)) { this.head++; this.off = 0; }
+    }
+    for (; i < n; i++) { l[i] = 0; r[i] = 0; }
+    if (this.head > 32) { this.q.splice(0, this.head); this.head = 0; }
+    if (this.tone) {
+      const t = this.tone;
+      for (let k = 0; k < n && t.left > 0; k++, t.left--) {
+        const v = 0.2 * Math.sin(t.ph); t.ph += 2 * Math.PI * t.f / sampleRate;
+        l[k] += v; r[k] += v;
+      }
+      if (t.left <= 0) this.tone = null;
+    }
+    if ((++this.n & 3) === 0) this.port.postMessage({ consumed: this.consumed, time: currentTime, queued: this.queued });
+    return true;
+  }
+}
+registerProcessor('iw4-out', Iw4Out);
+`;
+const A={ctx:null,node:null,ready:false,started:false,failed:false,listening:false,lastState:-1};
+function audioState(){if(!A.ctx)return 0;return A.ready&&A.ctx.state==='running'?2:1;}
+function reportState(){const s=audioState();if(s!==A.lastState){A.lastState=s;post({type:'audio-state',state:s});}}
+async function audioStart(){
+  if(A.started)return;
+  A.started=true;
+  try{
+    const ctx=new AudioContext({sampleRate:48000,latencyHint:'interactive'});
+    A.ctx=ctx;
+    ctx.addEventListener('statechange',reportState);
+    reportState();
+    ctx.resume().catch(()=>{});
+    const url=URL.createObjectURL(new Blob([WORKLET],{type:'text/javascript'}));
+    await ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const node=new AudioWorkletNode(ctx,'iw4-out',{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[2]});
+    node.port.onmessage=(e)=>{post({type:'audio-progress',consumed:e.data.consumed,queued:e.data.queued,time:e.data.time});};
+    node.connect(ctx.destination);
+    A.node=node;A.ready=true;
+    ctx.resume().catch(()=>{});
+    reportState();
+  }catch(e){
+    console.error('iw4 audio init failed',e);
+    A.started=false;A.failed=true;
+  }
+}
+const audioGo=()=>{
+  if(!A.started&&!A.failed)audioStart();
+  if(A.ctx&&A.ctx.state!=='running')A.ctx.resume().catch(()=>{});
+};
+function audioInit(){
+  if(A.listening)return;
+  A.listening=true;
+  for(const ev of ['pointerdown','keydown','touchend','mousedown'])addEventListener(ev,audioGo,{capture:true,passive:true});
+}
+function audioTone(f=440,secs=1){
+  audioGo();
+  if(A.node)A.node.port.postMessage({tone:{f,secs}});
+  else console.log('iw4 audio: not ready yet (click the page first)');
+}
+window.iw4_audio_sine=audioTone;
+</script>

@@ -22,7 +22,7 @@ fn slot() -> &'static Result<(PathBuf, String), String> {
             .unwrap_or_else(|| PathBuf::from("iw4l-artifacts"))
             .join("runs")
             .join(&id);
-        std::fs::create_dir_all(&dir)
+        vfs::fs::create_dir_all(&dir)
             .map_err(|error| format!("create {}: {error}", dir.display()))?;
         Ok((dir, id))
     })

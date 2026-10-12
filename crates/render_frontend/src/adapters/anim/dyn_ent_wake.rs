@@ -1,6 +1,6 @@
 use frame::ScopeApp;
 use std::collections::HashMap;
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use entity_iw4::EntityEventKind;

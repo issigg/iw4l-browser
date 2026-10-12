@@ -2,7 +2,7 @@ use crate::drawsurf::scene_depth::{SCENE_DEPTH_FORMAT, SceneDepthTexture};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::core_pipeline::core_3d::main_opaque_pass_3d;
 use bevy::core_pipeline::upscaling::ViewUpscalingPipeline;
@@ -169,6 +169,8 @@ struct ExactColourPortGpu {
     vertex_buffers: Vec<VertexBufferLayout>,
     cached_source: Option<Arc<str>>,
     cached_vertex_buffers: Vec<VertexBufferLayout>,
+    /// Web path: (register, dimension) of each sampler in slot order.
+    slot_regs: Vec<(u16, super::SamplerTextureDimension)>,
     port: super::AdmittedExactPort,
 }
 
@@ -748,6 +750,21 @@ pub fn bind_group_layout_from_entries(
             WgpuBindingKind::SamplerArray { count } => sampler(SamplerBindingType::Filtering)
                 .visibility(visibility)
                 .count(texture_table::array_count(count)),
+            WgpuBindingKind::Texture { dimension, filterable } => {
+                let sample = TextureSampleType::Float { filterable };
+                match dimension {
+                    super::SamplerTextureDimension::D2 => texture_2d(sample),
+                    super::SamplerTextureDimension::Cube => texture_cube(sample),
+                    super::SamplerTextureDimension::D3 => texture_3d(sample),
+                }
+                .visibility(visibility)
+            }
+            WgpuBindingKind::Sampler { filtering } => sampler(if filtering {
+                SamplerBindingType::Filtering
+            } else {
+                SamplerBindingType::NonFiltering
+            })
+            .visibility(visibility),
         };
         built.push(builder.build(u32::from(entry.binding), visibility));
     }

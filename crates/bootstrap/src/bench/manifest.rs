@@ -21,6 +21,7 @@
 //! because it does not control them and calling a run "cold" on the strength of
 //! a guess about them is how a cache hit gets reported as an optimisation.
 
+use vfs::VfsExt as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -204,15 +205,15 @@ fn binary(sha256: Option<&str>) -> Value {
     let Ok(path) = std::env::current_exe() else {
         return Value::Null;
     };
-    let metadata = std::fs::metadata(&path).ok();
+    let metadata = vfs::fs::metadata(&path).ok();
     json!({
         "path": path.display().to_string(),
-        "bytes": metadata.as_ref().map(std::fs::Metadata::len),
+        "bytes": metadata.as_ref().map(vfs::fs::Metadata::len),
         "sha256": sha256,
         "modified_unix_s": metadata
             .as_ref()
             .and_then(|metadata| metadata.modified().ok())
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|at| at.duration_since(web_time::UNIX_EPOCH).ok())
             .map(|since| since.as_secs()),
     })
 }
@@ -258,7 +259,7 @@ fn host() -> Value {
 
 #[cfg(target_os = "linux")]
 fn kernel() -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+    vfs::fs::read_to_string("/proc/sys/kernel/osrelease")
         .ok()
         .map(|value| value.trim().to_owned())
 }
@@ -270,7 +271,7 @@ fn kernel() -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn cpu_model() -> Option<String> {
-    let text = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    let text = vfs::fs::read_to_string("/proc/cpuinfo").ok()?;
     text.lines()
         .find(|line| line.starts_with("model name"))
         .and_then(|line| line.split_once(':'))
@@ -320,14 +321,14 @@ fn caches(artifacts: &Path) -> Value {
 /// the kinds and reports each one.
 fn prepared_cache(artifacts: &Path) -> Value {
     let dir = artifacts.join("cache");
-    let Ok(kinds) = std::fs::read_dir(&dir) else {
+    let Ok(kinds) = vfs::fs::read_dir(&dir) else {
         return json!({ "path": dir.display().to_string(), "present": false });
     };
     let mut by_kind = serde_json::Map::new();
     let mut files = 0u64;
     let mut bytes = 0u64;
     for kind in kinds.flatten() {
-        if !kind.file_type().is_ok_and(|kind| kind.is_dir()) {
+        if !kind.file_type().is_ok_and(|kind| kind.vdir()) {
             continue;
         }
         let (kind_files, kind_bytes) = walk(&kind.path());
@@ -349,18 +350,18 @@ fn prepared_cache(artifacts: &Path) -> Value {
 
 /// Files and bytes under a directory, following its subdirectories.
 fn walk(dir: &Path) -> (u64, u64) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = vfs::fs::read_dir(dir) else {
         return (0, 0);
     };
     let mut files = 0u64;
     let mut bytes = 0u64;
     for entry in entries.flatten() {
         match entry.metadata() {
-            Ok(metadata) if metadata.is_file() => {
+            Ok(metadata) if metadata.vfile() => {
                 files += 1;
                 bytes += metadata.len();
             }
-            Ok(metadata) if metadata.is_dir() => {
+            Ok(metadata) if metadata.vdir() => {
                 let (sub_files, sub_bytes) = walk(&entry.path());
                 files += sub_files;
                 bytes += sub_bytes;
@@ -374,5 +375,5 @@ fn walk(dir: &Path) -> (u64, u64) {
 pub(crate) fn write(path: &PathBuf, manifest: &Value) -> Result<(), String> {
     let bytes =
         serde_json::to_vec_pretty(manifest).map_err(|error| format!("encode manifest: {error}"))?;
-    std::fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+    vfs::fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
 }

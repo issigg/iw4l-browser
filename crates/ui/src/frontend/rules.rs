@@ -46,7 +46,17 @@ pub fn seed_rules(dvars: &mut UiMenuDvars, config: &str) {
         sim::FRIENDLY_BOTS_DVAR,
     ] {
         if dvars.get(dvar).is_none() {
-            dvars.set(dvar, "0");
+            // WASM-SPIKE: the web build is offline vs bots, so lobbies start with bots filled in.
+            let default = if !cfg!(target_family = "wasm") {
+                "0"
+            } else if dvar == sim::ENEMY_BOTS_DVAR {
+                "4"
+            } else if dvar == sim::FRIENDLY_BOTS_DVAR {
+                "2"
+            } else {
+                "0"
+            };
+            dvars.set(dvar, default);
         }
     }
 }

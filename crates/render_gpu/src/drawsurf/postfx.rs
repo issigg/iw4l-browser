@@ -679,7 +679,7 @@ struct PostFxTextureCache {
 
 struct PostFxPipelineWait {
     owner: MaterialGenerationId,
-    started: std::time::Instant,
+    started: web_time::Instant,
     reported: bool,
 }
 
@@ -687,7 +687,7 @@ impl PostFxPipelineWait {
     fn update(
         wait: &mut Option<Self>,
         owner: MaterialGenerationId,
-        now: std::time::Instant,
+        now: web_time::Instant,
     ) -> Option<std::time::Duration> {
         if wait.as_ref().is_none_or(|wait| wait.owner != owner) {
             *wait = Some(Self {
@@ -872,7 +872,7 @@ fn draw_postfx(
                 if let Some(elapsed) = PostFxPipelineWait::update(
                     &mut pipeline_wait,
                     gpu.prepared[0].film.generation,
-                    std::time::Instant::now(),
+                    web_time::Instant::now(),
                 ) {
                     diag::warn!(
                         World,
@@ -960,6 +960,35 @@ fn draw_postfx(
             .collect();
         let key = (ready.film.port.id(), views.iter().map(|v| v.id()).collect());
         let textures = texture_cache.groups.entry(key).or_insert_with(|| {
+            if d3d9_sm3::PER_SLOT_TEXTURES {
+                let registers: Vec<u16> = ready
+                    .film
+                    .port
+                    .abi()
+                    .samplers
+                    .iter()
+                    .map(|binding| binding.register)
+                    .collect();
+                // The upload ends with this step's slot words (one per sampler ordinal).
+                let words = d3d9_sm3::texture_slot_rows(ready.film.port.module().sampler_count) * 4;
+                let tail = &bytes[bytes.len() - words * 4..];
+                let slot_words: Vec<u32> = tail
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                return texture_table.views_bind_group_per_slot(
+                    &device,
+                    &cache.get_bind_group_layout(&ready.textures_layout),
+                    "iw4_postfx_images",
+                    &registers,
+                    &slot_words,
+                    &views,
+                    &[
+                        &ready.sampler,
+                        gpu.depth_sampler.as_ref().expect("prepared"),
+                    ],
+                );
+            }
             texture_table.views_bind_group(
                 &device,
                 &cache.get_bind_group_layout(&ready.textures_layout),

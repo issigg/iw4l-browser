@@ -157,6 +157,13 @@ fn fill_bots_from_rules(
     };
     roster.rules_filled = true;
     let Some(rules) = rules else {
+        // WASM-SPIKE: a direct `?map=` launch never passes the lobby, so no
+        // match rules exist and no bots would ever be requested.
+        #[cfg(target_family = "wasm")]
+        {
+            queue.push_side(3, crate::BotSide::Enemy);
+            diag::info!(Sim, "bots: no lobby rules (direct map launch); adding 3 enemy");
+        }
         return;
     };
     let count = |dvar: &str| {
@@ -516,7 +523,7 @@ fn think_bots(mut p: ThinkBots) {
             else {
                 continue;
             };
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let mut cmd = brain.drive_nav(
                 &obs,
                 &mut queried,
@@ -687,7 +694,7 @@ fn navigation_for(world: &mut SimWorld, digest: u64) -> NavGraph {
         );
         return graph;
     }
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     let mut graph = NavGraph::default();
     bake_navigation(world, &mut graph);
     diag::info!(

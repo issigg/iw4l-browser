@@ -281,8 +281,11 @@ pub(super) fn draw_exact_colour(
     let mut resolved_scene_copy = 0u32;
     let mut focused_drawn_passes = 0u32;
 
-    let sun_shadow_produced = sun_submit.gpu != 0;
-    let spot_shadow_produced = spot_submit.slots != 0 || spot_submit.gpu != 0;
+    // WASM-SPIKE: while the web build has no shadow passes, lit draws must not be held back
+    // waiting for shadow content that will never be recorded (that hides most textures).
+    let sun_shadow_produced = sun_submit.gpu != 0 || d3d9_sm3::PER_SLOT_TEXTURES;
+    let spot_shadow_produced =
+        spot_submit.slots != 0 || spot_submit.gpu != 0 || d3d9_sm3::PER_SLOT_TEXTURES;
     let held = retain_camera_draws_with_sun_content(
         &mut prepared,
         sun_shadow_produced,
@@ -331,6 +334,7 @@ pub(super) fn draw_exact_colour(
 
         indirect.publish(&mut prepared, &device, &adapter, &queue);
         let colour_input = ColourPassInputs {
+            ports: pipeline.as_ref(),
             device: &device,
             depth,
             viewport: extracted_view.viewport.as_vec4().to_array(),
@@ -392,10 +396,16 @@ pub(super) fn draw_exact_colour(
         let has_late_scene = prepared.iter().any(|draw| draw.after_scene_resolve);
         let table_layout =
             texture_table_layout(pipeline.as_ref()).expect("ports are non-empty above");
-        let table_binds = texture_table
-            .0
-            .each_mut()
-            .map(|table| &table.binds(&device, &registry, table_layout).scene);
+        let table_binds = if d3d9_sm3::PER_SLOT_TEXTURES {
+            super::encode::TextureBinds4::PerSlot(texture_table.0.each_ref())
+        } else {
+            super::encode::TextureBinds4::Table(
+                texture_table
+                    .0
+                    .each_mut()
+                    .map(|table| &table.binds(&device, &registry, table_layout).scene),
+            )
+        };
 
         let diagnostics = context.diagnostic_recorder();
         let diagnostics = diagnostics.as_deref();
@@ -409,7 +419,7 @@ pub(super) fn draw_exact_colour(
             &colour_input,
             encoder,
             target,
-            [table_binds[0], table_binds[1]],
+            table_binds.early(),
             prepared.iter().filter(|draw| !draw.after_scene_resolve),
             "iw4_exact_colour_pass",
         );
@@ -449,7 +459,7 @@ pub(super) fn draw_exact_colour(
                     &colour_input,
                     encoder,
                     target,
-                    [table_binds[2], table_binds[3]],
+                    table_binds.late(),
                     prepared.iter().filter(|draw| draw.after_scene_resolve),
                     "iw4_exact_emissive_pass",
                 );

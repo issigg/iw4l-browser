@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use web_time::Instant;
 
 use asset_transport::{cache_flight, cache_open, cache_put_with, fnv1a64, fnv1a64_more};
 

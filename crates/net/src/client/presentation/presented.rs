@@ -457,6 +457,8 @@ pub struct ViewweaponAim {
     pub gun_yaw: f32,
     pub xhair_x: f32,
     pub xhair_y: f32,
+    /// Camera (view kick, bob) minus `ps.viewangles`: pitch, yaw. Aim assist adds it to its view.
+    pub view_offset: [f32; 2],
 
     pub from_composed_axis: bool,
 }

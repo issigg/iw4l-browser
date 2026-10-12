@@ -120,6 +120,41 @@ impl DecodedMips {
         self.packed
     }
 
+    /// WASM-SPIKE texture cap: drop the largest mip levels until neither side exceeds `cap`
+    /// (each dropped level frees 75% of the texture). BC data keeps whole 4x4 blocks.
+    pub(super) fn capped(mut self, cap: u32) -> Self {
+        let total = self.level_sizes.len();
+        let mut skip = 0usize;
+        while skip + 1 < total && (self.width.max(self.height) >> skip) > cap {
+            skip += 1;
+        }
+        if matches!(
+            self.storage,
+            MipStorage::Bc1 | MipStorage::Bc2 | MipStorage::Bc3 | MipStorage::Bc5
+        ) {
+            while skip > 0 {
+                let (w, h) = (self.width >> skip, self.height >> skip);
+                if w >= 4 && h >= 4 && w % 4 == 0 && h % 4 == 0 {
+                    break;
+                }
+                skip -= 1;
+            }
+        }
+        if skip == 0 {
+            return self;
+        }
+        let offset: usize = self.level_sizes[..skip].iter().map(|s| *s as usize).sum();
+        if offset >= self.packed.len() {
+            return self;
+        }
+        // `split_off` moves the kept levels into their own exact allocation.
+        self.packed = self.packed.split_off(offset);
+        self.level_sizes.drain(..skip);
+        self.width = (self.width >> skip).max(1);
+        self.height = (self.height >> skip).max(1);
+        self
+    }
+
     pub(super) fn into_top_level_rgba8(mut self) -> Result<(u32, u32, Vec<u8>), String> {
         let top = *self
             .level_sizes
@@ -160,6 +195,19 @@ pub(super) type CubemapFaces = [Vec<u8>; 6];
 pub(super) fn decode_iwi_mips(bytes: &[u8]) -> Result<DecodedMips, String> {
     decode_iwi_mips_with(bytes, false)
 }
+
+/// World/model/weapon images: mip-capped on wasm, unchanged elsewhere. UI images keep using
+/// `decode_iwi_mips` so menus stay sharp.
+pub(super) fn decode_iwi_mips_world(bytes: &[u8]) -> Result<DecodedMips, String> {
+    let mips = decode_iwi_mips(bytes)?;
+    #[cfg(target_family = "wasm")]
+    let mips = mips.capped(WASM_TEXTURE_CAP);
+    Ok(mips)
+}
+
+/// Largest texture side kept on wasm (a quarter of the memory per level dropped).
+#[cfg(target_family = "wasm")]
+pub(super) const WASM_TEXTURE_CAP: u32 = 512;
 
 pub(super) fn decode_iwi_mips_with(bytes: &[u8], keep_bc5: bool) -> Result<DecodedMips, String> {
     if bytes.len() >= IWI_V8_HEADER_LEN

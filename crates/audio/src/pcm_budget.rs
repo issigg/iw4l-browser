@@ -1,6 +1,10 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+#[cfg(not(target_family = "wasm"))]
 const PCM_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+// The wasm heap is nearly full on larger maps.
+#[cfg(target_family = "wasm")]
+const PCM_LIMIT_BYTES: usize = 96 * 1024 * 1024;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);

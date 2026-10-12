@@ -2,7 +2,8 @@ use std::io::{BufWriter, Write};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::time::{Duration, Instant};
+use std::time::{Duration};
+use web_time::{Instant};
 
 static SINK: OnceLock<Option<Sink>> = OnceLock::new();
 static DROPPED: AtomicU64 = AtomicU64::new(0);
@@ -18,6 +19,15 @@ enum Message {
 }
 
 pub fn enabled() -> bool {
+    // WASM-SPIKE: the diagnostics sink needs a thread; disabled on wasm.
+    #[cfg(target_family = "wasm")]
+    return false;
+    #[cfg(not(target_family = "wasm"))]
+    enabled_native()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn enabled_native() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("IW4L_AUDIO_DIAG").is_ok_and(|value| value == "1"))
 }
@@ -28,7 +38,7 @@ pub fn emit(message: String) {
     }
     let sink = SINK.get_or_init(|| {
         let file = std::env::var_os("IW4L_AUDIO_DIAG_PATH")
-            .and_then(|path| std::fs::File::create(path).ok());
+            .and_then(|path| vfs::fs::File::create(path).ok());
         let (tx, rx) = sync_channel::<Message>(8192);
         let worker = std::thread::Builder::new()
             .name("audio-diagnostics".into())
@@ -120,7 +130,7 @@ pub(crate) fn thread(name: &str) {
         return;
     }
     #[cfg(target_os = "linux")]
-    if let Ok(status) = std::fs::read_to_string("/proc/thread-self/status") {
+    if let Ok(status) = vfs::fs::read_to_string("/proc/thread-self/status") {
         let affinity = status
             .lines()
             .find(|line| line.starts_with("Cpus_allowed_list:"))

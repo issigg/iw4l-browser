@@ -52,7 +52,7 @@ pub(crate) fn route_capture_commands(
                     }
                 };
                 if let Some(parent) = path.parent()
-                    && let Err(error) = std::fs::create_dir_all(parent)
+                    && let Err(error) = vfs::fs::create_dir_all(parent)
                 {
                     echo(
                         format!("screenshot: create {}: {error}", parent.display()),

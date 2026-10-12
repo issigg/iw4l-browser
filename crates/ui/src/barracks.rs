@@ -7,7 +7,7 @@ pub struct BarracksProfile {
     pub loaded: bool,
     path: Option<std::path::PathBuf>,
     written: Option<sim::PlayerProfile>,
-    retry_at: Option<std::time::Instant>,
+    retry_at: Option<web_time::Instant>,
 }
 
 pub fn reward_rows(catalog: &MenuCatalog) -> Vec<u32> {
@@ -86,7 +86,7 @@ pub(crate) fn load_profile(
     profile.loaded = true;
     profile.selection = selection;
     let path = identity.artifacts.join("profile/barracks.txt");
-    match std::fs::read_to_string(&path) {
+    match vfs::fs::read_to_string(&path) {
         Ok(text) => {
             let mut fields = text.split_whitespace();
             let header = fields.next();
@@ -132,7 +132,7 @@ pub(crate) fn save_profile(catalog: Res<MenuCatalog>, mut profile: ResMut<Barrac
         || profile.written == Some(profile.selection)
         || profile
             .retry_at
-            .is_some_and(|at| std::time::Instant::now() < at)
+            .is_some_and(|at| web_time::Instant::now() < at)
         || !valid_profile(&catalog, profile.selection)
     {
         return;
@@ -146,15 +146,15 @@ pub(crate) fn save_profile(catalog: Res<MenuCatalog>, mut profile: ResMut<Barrac
         killstreaks: [a, b, c],
     } = profile.selection;
     let contents = format!("iw4l-barracks-1\n{title} {emblem} {a} {b} {c}\n");
-    let pending = path.with_extension(format!("{}.tmp", std::process::id()));
+    let pending = path.with_extension(format!("{}.tmp", vfs::process_id()));
     let result = (|| -> std::io::Result<()> {
         use std::io::Write;
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        let mut file = std::fs::File::create(&pending)?;
+        vfs::fs::create_dir_all(path.parent().unwrap())?;
+        let mut file = vfs::fs::File::create(&pending)?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&pending, &path)
+        vfs::fs::rename(&pending, &path)
     })();
     match result {
         Ok(()) => {
@@ -162,8 +162,8 @@ pub(crate) fn save_profile(catalog: Res<MenuCatalog>, mut profile: ResMut<Barrac
             profile.retry_at = None;
         }
         Err(error) => {
-            let _ = std::fs::remove_file(pending);
-            profile.retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+            let _ = vfs::fs::remove_file(pending);
+            profile.retry_at = Some(web_time::Instant::now() + std::time::Duration::from_secs(5));
             diag::warn!(Ui, "barracks: cannot write {}: {error}", path.display());
         }
     }

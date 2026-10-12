@@ -71,6 +71,8 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
     }
     catalog.load_definitions(include_str!("../menus/connection_error.json"))?;
     catalog.load_definitions(include_str!("../menus/map_error.json"))?;
+    catalog.load_definitions(include_str!("../menus/about.json"))?;
+    catalog.load_definitions(include_str!("../menus/tweaks.json"))?;
     catalog.load_definitions(include_str!("../menus/classes.json"))?;
     catalog.load_definitions(include_str!("../menus/barracks.json"))?;
     catalog.load_definitions(include_str!("../menus/settings.json"))?;
@@ -200,7 +202,10 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
                 "play mouse_click; close self; open options_game_folders;".into(),
             )];
             let mut community_servers = game_folders.clone();
-            menu.items.push(game_folders);
+            // WASM-SPIKE: the browser build has no game-folder picker or community servers.
+            if !cfg!(target_family = "wasm") {
+                menu.items.push(game_folders);
+            }
             community_servers.name = "community_servers_settings".into();
             community_servers.text_key = "Community Servers".into();
             community_servers.rect.y = 148.0;
@@ -208,7 +213,9 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
             community_servers.handlers.action = vec![asset_game::MenuEvent::Script(
                 "play mouse_click; close self; open options_community_servers;".into(),
             )];
-            menu.items.push(community_servers);
+            if !cfg!(target_family = "wasm") {
+                menu.items.push(community_servers);
+            }
         }
 
         let removed_rows: Vec<_> = menu

@@ -11,7 +11,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::ViewTarget;
-use std::time::Instant;
+use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct RecordCensus {
@@ -80,7 +80,53 @@ impl<'a> RecordGeometry<'a> {
     }
 }
 
+/// How group 1 (textures) is provided for a colour pass.
+#[derive(Clone, Copy)]
+pub(super) enum TextureBinds<'a> {
+    /// Native: one global bindless table per sRGB lane.
+    Table([&'a BindGroup; 2]),
+    /// Web: a bind group per draw, built from the draw's slot words.
+    PerSlot([&'a super::texture_table::ExactTextureTable; 2]),
+}
+
+/// The four scene lanes (early/late x sRGB) in one value.
+pub(super) enum TextureBinds4<'a> {
+    Table([&'a BindGroup; 4]),
+    PerSlot([&'a super::texture_table::ExactTextureTable; 4]),
+}
+
+impl<'a> TextureBinds4<'a> {
+    pub(super) fn early(&self) -> TextureBinds<'a> {
+        match self {
+            Self::Table(g) => TextureBinds::Table([g[0], g[1]]),
+            Self::PerSlot(t) => TextureBinds::PerSlot([t[0], t[1]]),
+        }
+    }
+    pub(super) fn late(&self) -> TextureBinds<'a> {
+        match self {
+            Self::Table(g) => TextureBinds::Table([g[2], g[3]]),
+            Self::PerSlot(t) => TextureBinds::PerSlot([t[2], t[3]]),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LaneBinds<'a> {
+    Table(&'a BindGroup),
+    PerSlot(&'a super::texture_table::ExactTextureTable),
+}
+
+impl<'a> TextureBinds<'a> {
+    fn lane(self, lane: usize) -> LaneBinds<'a> {
+        match self {
+            Self::Table(groups) => LaneBinds::Table(groups[lane]),
+            Self::PerSlot(tables) => LaneBinds::PerSlot(tables[lane]),
+        }
+    }
+}
+
 pub(super) struct ColourPassInputs<'a> {
+    pub(super) ports: &'a super::ExactColourPipeline,
     pub(super) device: &'a RenderDevice,
     pub(super) depth: &'a SceneDepthTexture,
     pub(super) viewport: [f32; 4],
@@ -126,7 +172,7 @@ pub(super) fn record_colour_pass<'a>(
     input: &ColourPassInputs<'_>,
     encoder: &mut CommandEncoder,
     target: &ViewTarget,
-    textures_bind: [&BindGroup; 2],
+    textures_bind: TextureBinds<'_>,
     draws: impl IntoIterator<Item = &'a PreparedExactDraw>,
     label: &'static str,
 ) -> ColourRecordResult {
@@ -169,7 +215,7 @@ pub(super) fn record_colour_pass<'a>(
             input,
             encoder,
             attachment,
-            textures_bind[usize::from(srgb_write)],
+            textures_bind.lane(usize::from(srgb_write)),
             std::iter::from_fn(|| {
                 draws.next_if(|draw| draw.state.srgb_write_enable() == srgb_write)
             }),
@@ -184,12 +230,53 @@ fn record_colour_run<'a>(
     input: &ColourPassInputs<'_>,
     encoder: &mut CommandEncoder,
     attachment: RenderPassColorAttachment<'_>,
-    textures_bind: &BindGroup,
+    textures_bind: LaneBinds<'_>,
     draws: impl IntoIterator<Item = &'a PreparedExactDraw>,
     label: &'static str,
 ) -> ColourRecordResult {
     let mut result = ColourRecordResult::default();
     let attachments = [Some(attachment)];
+    // Web path: the pass borrows its bind groups for its whole lifetime, so build them first.
+    let draws: Vec<&'a PreparedExactDraw> = draws.into_iter().collect();
+    let slot_groups: Vec<Option<BindGroup>> = match textures_bind {
+        LaneBinds::Table(_) => Vec::new(),
+        LaneBinds::PerSlot(table) => {
+            let mut groups = Vec::with_capacity(draws.len());
+            let mut last: Option<(super::PortId, std::sync::Arc<[u32]>, Option<BindGroup>)> = None;
+            let mut layout: Option<(super::PortId, bevy::render::render_resource::BindGroupLayout)> =
+                None;
+            for draw in &draws {
+                if let Some((port, slots, group)) = &last
+                    && *port == draw.port
+                    && (std::sync::Arc::ptr_eq(slots, &draw.texture_slots)
+                        || **slots == *draw.texture_slots)
+                {
+                    groups.push(group.clone());
+                    continue;
+                }
+                let group = input.ports.get(draw.port).and_then(|port| {
+                    if layout.as_ref().map(|(id, _)| *id) != Some(draw.port) {
+                        layout = Some((
+                            draw.port,
+                            input
+                                .registry
+                                .bind_group_layout(input.device, &port.textures_layout),
+                        ));
+                    }
+                    table.slot_bind_group(
+                        input.device,
+                        &layout.as_ref().expect("set above").1,
+                        &port.slot_regs,
+                        &draw.texture_slots,
+                        false,
+                    )
+                });
+                last = Some((draw.port, draw.texture_slots.clone(), group.clone()));
+                groups.push(group);
+            }
+            groups
+        }
+    };
     let mut pass = TrackedRenderPass::new(
         input.device,
         encoder.begin_render_pass(&RenderPassDescriptor {
@@ -207,6 +294,7 @@ fn record_colour_run<'a>(
     let mut bound_depth = None;
     let mut bound_arena = None;
     let mut textures_bound = false;
+    let mut bound_slot_group: Option<bevy::render::render_resource::BindGroupId> = None;
 
     let indirect_args = input.indirect_args;
     let mut batch = indirect::IndirectBatch::default();
@@ -220,7 +308,7 @@ fn record_colour_run<'a>(
     }
     let [vp_x, vp_y, vp_w, vp_h] = input.viewport;
 
-    for draw in draws {
+    for (draw_index, draw) in draws.into_iter().enumerate() {
         let Some(gpu_pipeline) = input.registry.ready(draw.pipeline) else {
             result.refused_draws = result.refused_draws.saturating_add(1);
             result.encode_not_ready = result.encode_not_ready.saturating_add(1);
@@ -321,10 +409,27 @@ fn record_colour_run<'a>(
             bound_arena = Some(draw.arena_lane);
             result.bindings.group0 = result.bindings.group0.saturating_add(1);
         }
-        if !textures_bound {
-            pass.set_bind_group(1, textures_bind, &[]);
-            textures_bound = true;
-            result.bindings.group1 = result.bindings.group1.saturating_add(1);
+        match textures_bind {
+            LaneBinds::Table(group) => {
+                if !textures_bound {
+                    pass.set_bind_group(1, group, &[]);
+                    textures_bound = true;
+                    result.bindings.group1 = result.bindings.group1.saturating_add(1);
+                }
+            }
+            LaneBinds::PerSlot(_) => {
+                let Some(group) = slot_groups.get(draw_index).and_then(Option::as_ref) else {
+                    result.refused_draws = result.refused_draws.saturating_add(1);
+                    result.last_refusal = Some(GpuSubmitRefusal::PipelineNotReady);
+                    continue;
+                };
+                if bound_slot_group != Some(group.id()) {
+                    issue_indirect_batch!();
+                    pass.set_bind_group(1, group, &[]);
+                    bound_slot_group = Some(group.id());
+                    result.bindings.group1 = result.bindings.group1.saturating_add(1);
+                }
+            }
         }
         if draw.tess == ExactTessBind::World {
             let logical = input.geometry.world_index_count;

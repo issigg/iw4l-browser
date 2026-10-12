@@ -34,7 +34,7 @@ fn startup_commands_from(args: impl Iterator<Item = String>, env: Option<String>
 pub(crate) struct StdinCommands(std::sync::Mutex<std::sync::mpsc::Receiver<String>>);
 
 pub(crate) fn install_stdin(app: &mut bevy::prelude::App) {
-    if std::env::var("IW4L_CONSOLE_STDIN").as_deref() != Ok("1") {
+    if cfg!(target_family = "wasm") || std::env::var("IW4L_CONSOLE_STDIN").as_deref() != Ok("1") {
         return;
     }
     let (sender, receiver) = std::sync::mpsc::sync_channel(256);

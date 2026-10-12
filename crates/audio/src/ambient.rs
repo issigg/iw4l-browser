@@ -41,7 +41,7 @@ pub(crate) struct SoundBankCompose {
     bank: Option<Task<ComposedBank>>,
     common_profile_id: u64,
     products_id: u64,
-    started: std::time::Instant,
+    started: web_time::Instant,
     wait: Option<SoundBankWait>,
 }
 
@@ -54,17 +54,17 @@ enum SoundBankWaitStage {
 
 struct SoundBankWait {
     stage: SoundBankWaitStage,
-    started: std::time::Instant,
+    started: web_time::Instant,
     reported: bool,
     progress: Option<Vec<asset_transport::StageSnapshot>>,
-    sampled_at: Option<std::time::Instant>,
+    sampled_at: Option<web_time::Instant>,
 }
 
 impl SoundBankWait {
     fn update(
         wait: &mut Option<Self>,
         stage: SoundBankWaitStage,
-        now: std::time::Instant,
+        now: web_time::Instant,
         progress: Option<&asset_transport::LoadProgress>,
     ) -> Option<std::time::Duration> {
         if wait.as_ref().is_none_or(|wait| wait.stage != stage) {
@@ -212,7 +212,7 @@ pub(crate) fn start_sound_bank_compose(
                 bank: None,
                 common_profile_id: 0,
                 products_id: 0,
-                started: std::time::Instant::now(),
+                started: web_time::Instant::now(),
                 wait: None,
             },
             frame::MatchScope::Loading,
@@ -320,7 +320,7 @@ pub(crate) fn install_sound_bank(
         if let Some(elapsed) = SoundBankWait::update(
             &mut compose.wait,
             stage,
-            std::time::Instant::now(),
+            web_time::Instant::now(),
             progress,
         ) {
             diag::warn!(

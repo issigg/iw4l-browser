@@ -168,6 +168,8 @@ impl Plugin for ConsolePlugin {
                         handle_input_commands,
                         apply_console_os_paste,
                         (
+                            crate::local_account::auto_unlock_web,
+                            crate::web_welcome::show_about_once,
                             crate::local_account::route_unlock_commands,
                             crate::feature_dispatch::route_replay_commands,
                         )
@@ -383,6 +385,8 @@ fn publish_client_action_input(
         devices.aiming_with_pad = false;
     }
     out.pad_aim_assist = 0;
+    out.mouse_aim_assist = 0;
+    out.mouse_pull = [0.0; 2];
     out.pad_move = [0.0; 2];
     out.pad_look = [0.0; 2];
     out.pad_look_delta = [0.0; 2];
@@ -492,6 +496,7 @@ fn publish_client_action_input(
                 let look = crate::gamepad::shaped_look(sticks.look, &settings);
                 out.pad_look = [look.x, look.y];
                 out.pad_deflection = sticks.look.length();
+                out.pad_aim_assist = settings.pad_aim_assist.min(2);
             }
         }
         for (button, _) in binds.iter() {
@@ -531,6 +536,9 @@ fn publish_client_action_input(
             out.mouse_y += event.delta.y;
         }
         let mouse_moved = out.mouse_x != 0.0 || out.mouse_y != 0.0;
+        if mouse_moved && pad.is_none() {
+            out.mouse_aim_assist = settings.mouse_aim_assist.min(3);
+        }
         if mouse_moved {
             devices.aiming_with_pad = false;
             out.pad_look = [0.0; 2];
@@ -2237,7 +2245,7 @@ fn dispatch_console_command(
             );
             let line = format!(
                 "benchmark-mark: pid={} seq={} ns={ns} label={label}{rss}{heap}{facts}",
-                std::process::id(),
+                vfs::process_id(),
                 *mark_sequence
             );
             perf::benchmark_mark(label, *mark_sequence, ns as u64);

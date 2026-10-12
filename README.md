@@ -32,6 +32,11 @@ For online play, put the `.iw4l-server` file you received from a server operator
 to `iw4l.exe`. With it the game finds that master and updates itself on launch. Details:
 [Windows guide](docs/WINDOWS.md).
 
+## In the browser
+
+An experimental WebAssembly/WebGPU build runs in Chrome against your own game files. See
+[crates/web/README.md](crates/web/README.md).
+
 ## Build and run
 
 Install Rust through rustup and GNU Make. [Build dependencies](docs/BUILD.md) cover

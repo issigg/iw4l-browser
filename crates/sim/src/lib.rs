@@ -5,6 +5,8 @@ pub use shield::{ShieldAttachment, ShieldCarrierCollision};
 pub mod bullet_collision;
 mod carrier;
 pub mod chat;
+pub mod tweaks;
+pub use tweaks::Tweaks;
 pub mod collision_census;
 pub mod combat;
 pub mod content;

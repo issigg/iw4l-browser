@@ -22,6 +22,13 @@ pub fn cached_lighting_port_variant(
 
 fn adapt_admitted_port(port: &crate::AdmittedExactPort) -> ExactColourPortGpu {
     let (constants, textures) = split_bind_layout(port.wgpu_layout());
+    let slot_regs = textures
+        .iter()
+        .filter_map(|entry| match entry.kind {
+            crate::WgpuBindingKind::Texture { dimension, .. } => Some((entry.binding, dimension)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let vertex_buffers = crate::vertex_layouts_from_contract(port.wgpu_layout());
     let (cached_source, cached_vertex_buffers) =
         cached_lighting_port_variant(port, &vertex_buffers);
@@ -43,6 +50,7 @@ fn adapt_admitted_port(port: &crate::AdmittedExactPort) -> ExactColourPortGpu {
         vertex_buffers,
         cached_source,
         cached_vertex_buffers,
+        slot_regs,
         port: port.clone(),
     }
 }

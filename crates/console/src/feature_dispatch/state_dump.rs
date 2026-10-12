@@ -1,7 +1,7 @@
-use std::fs::OpenOptions;
+use vfs::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 use frame::LaunchIdentity;
@@ -269,7 +269,7 @@ fn persist_state_dump(
     body: &str,
 ) -> Result<PathBuf, String> {
     let directory = artifacts.join("dumps");
-    std::fs::create_dir_all(&directory)
+    vfs::fs::create_dir_all(&directory)
         .map_err(|error| format!("create {}: {error}", directory.display()))?;
     let file_name = format!("{captured_unix_ns}-{name}.txt");
     let path = directory.join(&file_name);
@@ -281,7 +281,7 @@ pub(super) fn persist_bytes_atomic(path: &Path, body: &str) -> Result<(), String
     let directory = path
         .parent()
         .ok_or_else(|| format!("{} has no parent", path.display()))?;
-    std::fs::create_dir_all(directory)
+    vfs::fs::create_dir_all(directory)
         .map_err(|error| format!("create {}: {error}", directory.display()))?;
     let file_name = path
         .file_name()
@@ -299,19 +299,19 @@ pub(super) fn persist_bytes_atomic(path: &Path, body: &str) -> Result<(), String
         file.flush()
             .map_err(|error| format!("flush {}: {error}", temporary.display()))?;
         drop(file);
-        std::fs::hard_link(&temporary, path).map_err(|error| {
+        vfs::fs::hard_link(&temporary, path).map_err(|error| {
             format!(
                 "link {} to {}: {error}",
                 temporary.display(),
                 path.display()
             )
         })?;
-        std::fs::remove_file(&temporary)
+        vfs::fs::remove_file(&temporary)
             .map_err(|error| format!("remove {}: {error}", temporary.display()))?;
         Ok(())
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        let _ = vfs::fs::remove_file(&temporary);
     }
     result
 }

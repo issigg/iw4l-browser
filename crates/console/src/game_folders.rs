@@ -1,3 +1,4 @@
+use vfs::VfsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -38,7 +39,7 @@ pub fn stored_game_folders(artifacts: &Path) -> Vec<PathBuf> {
     let Some(path) = crate::user_settings::settings_path(artifacts) else {
         return Vec::new();
     };
-    let Ok(source) = std::fs::read_to_string(&path) else {
+    let Ok(source) = vfs::fs::read_to_string(&path) else {
         return Vec::new();
     };
     let mut settings = frame::GameSettings::default();
@@ -82,6 +83,13 @@ impl Default for FolderPicks {
 }
 
 impl FolderPicks {
+    // WASM-SPIKE: no native folder dialog in the browser.
+    #[cfg(target_family = "wasm")]
+    fn open_dialog(&self, _game: OtherGame, _start: Option<PathBuf>) {
+        warn!("folder dialog unavailable in the browser build");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     fn open_dialog(&self, game: OtherGame, start: Option<PathBuf>) {
         if self.dialog_open.swap(true, Ordering::AcqRel) {
             return;
@@ -93,7 +101,7 @@ impl FolderPicks {
             .spawn(move || {
                 let mut dialog =
                     rfd::FileDialog::new().set_title(format!("Choose the {} folder", game.title()));
-                if let Some(start) = start.filter(|start| start.is_dir()) {
+                if let Some(start) = start.filter(|start| start.vdir()) {
                     dialog = dialog.set_directory(start);
                 }
                 if let Some(folder) = dialog.pick_folder() {

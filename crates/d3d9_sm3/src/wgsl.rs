@@ -25,6 +25,12 @@ pub const TEXTURE_TABLE_BINDING_CUBE: u32 = 1;
 pub const TEXTURE_TABLE_BINDING_3D: u32 = 2;
 pub const TEXTURE_TABLE_BINDING_SAMPLERS: u32 = 3;
 
+/// WebGPU has no binding arrays, so on wasm every sampler register gets its own texture and sampler
+/// binding in group 1 (texture at `register`, sampler at `PER_SLOT_SAMPLER_BASE + register`) and the
+/// host binds a per-draw group instead of one global table.
+pub const PER_SLOT_TEXTURES: bool = cfg!(target_family = "wasm");
+pub const PER_SLOT_SAMPLER_BASE: u32 = 16;
+
 pub const fn texture_slot_word(texture: u16, sampler: u16) -> u32 {
     (texture as u32) | ((sampler as u32) << 16)
 }
@@ -557,7 +563,11 @@ pub fn lower_pass_to_wgsl(
         return Err(Sm3WgslError::MissingColourOutput);
     }
 
-    let mut source = String::from("enable wgpu_binding_array;\n");
+    let mut source = if PER_SLOT_TEXTURES {
+        String::new()
+    } else {
+        String::from("enable wgpu_binding_array;\n")
+    };
     source.push_str("struct Sm3ConstantArena { c: array<vec4<f32>> }\n");
     source.push_str("@group(0) @binding(0) var<storage, read> sm3_constants: Sm3ConstantArena;\n");
     if vertex_plan.uses_relative_float {
@@ -953,6 +963,31 @@ fn write_texture_table_bindings(wgsl: &mut String, abi: &PassLoweringAbi) {
     if abi.samplers.is_empty() {
         return;
     }
+    if PER_SLOT_TEXTURES {
+        for slot in &abi.samplers {
+            let register = u32::from(slot.register);
+            let texture_type = match slot.dimension {
+                SamplerTextureDimension::D2 => "texture_2d<f32>",
+                SamplerTextureDimension::Cube => "texture_cube<f32>",
+                SamplerTextureDimension::D3 => "texture_3d<f32>",
+            };
+            writeln!(
+                wgsl,
+                "@group({TEXTURE_TABLE_GROUP}) @binding({register}) var sm3_tex_s{register}: {texture_type};"
+            )
+            .unwrap();
+            writeln!(
+                wgsl,
+                "@group({TEXTURE_TABLE_GROUP}) @binding({}) var sm3_smp_s{register}: sampler;",
+                PER_SLOT_SAMPLER_BASE + register
+            )
+            .unwrap();
+        }
+        if abi.samplers.iter().any(|slot| slot.depth_compare) {
+            wgsl.push_str(SHADOW_COMPARE_FN_PER_SLOT);
+        }
+        return;
+    }
     for (dimension, binding, texture_type) in [
         (
             SamplerTextureDimension::D2,
@@ -989,9 +1024,15 @@ fn write_texture_table_bindings(wgsl: &mut String, abi: &PassLoweringAbi) {
     }
 }
 
-// D3D9 depth-format shadow maps answer a fetch with a bilinear-filtered
-// `z <= stored` test, not the stored depth; programs written for them average
-// those answers, so a plain fetch of the float atlas yields garbage edges.
+const SHADOW_COMPARE_FN_PER_SLOT: &str = "fn sm3_shadow_compare(tex: texture_2d<f32>, smp: sampler, uv: vec2<f32>, z: f32) -> f32 {
+    let size = vec2<f32>(textureDimensions(tex));
+    let stored = textureGather(0, tex, smp, uv);
+    let lit = select(vec4<f32>(0.0), vec4<f32>(1.0), stored >= vec4<f32>(z));
+    let f = fract(uv * size - 0.5);
+    return mix(mix(lit.w, lit.z, f.x), mix(lit.x, lit.y, f.x), f.y);
+}
+";
+
 const SHADOW_COMPARE_FN: &str = "fn sm3_shadow_compare(slot: u32, uv: vec2<f32>, z: f32) -> f32 {
     let size = vec2<f32>(textureDimensions(sm3_textures_2d[slot & 0xffffu]));
     let stored = textureGather(0, sm3_textures_2d[slot & 0xffffu], sm3_samplers[slot >> 16u], uv);
@@ -1734,10 +1775,23 @@ fn texture_component(
             Some(w) => format!("{z} / {w}"),
             None => z,
         };
+        if PER_SLOT_TEXTURES {
+            let register = sampler.register.index;
+            return Ok(format!(
+                "sm3_shadow_compare(sm3_tex_s{register}, sm3_smp_s{register}, {coordinate}, {z})"
+            ));
+        }
         return Ok(format!("sm3_shadow_compare({slot}, {coordinate}, {z})"));
     }
-    let texture = format!("{}[{slot} & 0xffffu]", texture_array_name(dimension));
-    let sampler_expr = format!("sm3_samplers[{slot} >> 16u]");
+    let (texture, sampler_expr) = if PER_SLOT_TEXTURES {
+        let register = sampler.register.index;
+        (format!("sm3_tex_s{register}"), format!("sm3_smp_s{register}"))
+    } else {
+        (
+            format!("{}[{slot} & 0xffffu]", texture_array_name(dimension)),
+            format!("sm3_samplers[{slot} >> 16u]"),
+        )
+    };
     let sample = if opcode == Sm3Opcode::TexLdL {
         let level = source_component(at_word, &sources[0], 3, external, defined, relative_c)?;
         format!("textureSampleLevel({texture}, {sampler_expr}, {coordinate}, {level})")

@@ -776,10 +776,14 @@
       [
        "Off",
        "0"
+      ],
+      [
+       "On",
+       "1"
       ]
      ],
      "vis_exp": "1",
-     "disabled_exp": "1",
+     "disabled_exp": "0",
      "text_key": "",
      "text_exp": "",
      "text_align_mode": 10,

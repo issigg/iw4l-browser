@@ -45,12 +45,26 @@ impl<'a> ShadowGeometry<'a> {
     }
 }
 
+/// How group 1 (textures) is provided for a shadow pass.
+#[derive(Clone, Copy)]
+pub(super) enum ShadowTextureBinds<'a> {
+    /// Native: one global bindless table bind group.
+    Table(&'a BindGroup),
+    /// Web: a bind group per draw built from the draw's slot words. `mask_sun` swaps the sun
+    /// shadow map (the pass's own render target) for a placeholder.
+    PerSlot {
+        ports: &'a super::ExactColourPipeline,
+        table: &'a super::texture_table::ExactTextureTable,
+        mask_sun: bool,
+    },
+}
+
 pub(super) struct ShadowPassInputs<'a> {
     pub(super) device: &'a RenderDevice,
     pub(super) registry: &'a ExactPipelineRegistry,
     pub(super) geometry: ShadowGeometry<'a>,
     pub(super) constants_bind: Option<&'a BindGroup>,
-    pub(super) textures_bind: &'a BindGroup,
+    pub(super) textures: ShadowTextureBinds<'a>,
     pub(super) color_view: &'a TextureView,
     pub(super) depth_view: &'a TextureView,
     pub(super) scissor: D3dScissorRect,
@@ -119,13 +133,58 @@ pub(super) fn record_shadowmap_draws<'a>(
         registry,
         geometry,
         constants_bind,
-        textures_bind,
+        textures,
         color_view,
         depth_view,
         scissor,
         viewport,
         cleared,
     } = inputs;
+    // Web path: the pass borrows its bind groups for its whole lifetime, so build them first.
+    let draws: Vec<&'a PreparedExactDraw> = draws.into_iter().collect();
+    let slot_groups: Vec<Option<BindGroup>> = match textures {
+        ShadowTextureBinds::Table(_) => Vec::new(),
+        ShadowTextureBinds::PerSlot {
+            ports,
+            table,
+            mask_sun,
+        } => {
+            let mut groups = Vec::with_capacity(draws.len());
+            let mut last: Option<(super::PortId, std::sync::Arc<[u32]>, Option<BindGroup>)> = None;
+            let mut layout: Option<(
+                super::PortId,
+                bevy::render::render_resource::BindGroupLayout,
+            )> = None;
+            for draw in &draws {
+                if let Some((port, slots, group)) = &last
+                    && *port == draw.port
+                    && (std::sync::Arc::ptr_eq(slots, &draw.texture_slots)
+                        || **slots == *draw.texture_slots)
+                {
+                    groups.push(group.clone());
+                    continue;
+                }
+                let group = ports.get(draw.port).and_then(|port| {
+                    if layout.as_ref().map(|(id, _)| *id) != Some(draw.port) {
+                        layout = Some((
+                            draw.port,
+                            registry.bind_group_layout(device, &port.textures_layout),
+                        ));
+                    }
+                    table.slot_bind_group(
+                        device,
+                        &layout.as_ref().expect("set above").1,
+                        &port.slot_regs,
+                        &draw.texture_slots,
+                        mask_sun,
+                    )
+                });
+                last = Some((draw.port, draw.texture_slots.clone(), group.clone()));
+                groups.push(group);
+            }
+            groups
+        }
+    };
     let mut result = ShadowRecordResult::default();
     let (sx, sy, sw, sh) = scissor_xywh(scissor);
     let vp = viewport;
@@ -183,8 +242,9 @@ pub(super) fn record_shadowmap_draws<'a>(
     let mut bound_epoch = None;
     let mut bound_depth = None;
     let mut constants_bound = false;
+    let mut bound_slot_group: Option<bevy::render::render_resource::BindGroupId> = None;
     let mut indexed = 0u32;
-    for draw in draws {
+    for (draw_index, draw) in draws.into_iter().enumerate() {
         let Some(gpu_pipeline) = registry.ready(draw.pipeline) else {
             result.refuse(ShadowRecordRefusal::PipelineNotReady);
             continue;
@@ -245,10 +305,23 @@ pub(super) fn record_shadowmap_draws<'a>(
         }
         if !constants_bound {
             pass.set_bind_group(0, constants_bind, &[]);
-            pass.set_bind_group(1, textures_bind, &[]);
             constants_bound = true;
             record_n.group0 = record_n.group0.saturating_add(1);
-            record_n.group1 = record_n.group1.saturating_add(1);
+            if let ShadowTextureBinds::Table(group) = textures {
+                pass.set_bind_group(1, group, &[]);
+                record_n.group1 = record_n.group1.saturating_add(1);
+            }
+        }
+        if matches!(textures, ShadowTextureBinds::PerSlot { .. }) {
+            let Some(group) = slot_groups.get(draw_index).and_then(Option::as_ref) else {
+                result.refuse(ShadowRecordRefusal::PipelineNotReady);
+                continue;
+            };
+            if bound_slot_group != Some(group.id()) {
+                pass.set_bind_group(1, group, &[]);
+                bound_slot_group = Some(group.id());
+                record_n.group1 = record_n.group1.saturating_add(1);
+            }
         }
         pass.draw_indexed(
             draw.start..draw.start.saturating_add(draw.count),

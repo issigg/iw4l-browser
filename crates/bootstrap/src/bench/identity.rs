@@ -34,6 +34,9 @@ fn slot() -> &'static std::sync::Mutex<Digests> {
 
 /// Start digesting the binary, the demo and the lock file. Returns at once.
 pub(crate) fn spawn(demo: Option<&Path>, root: &Path) {
+    if cfg!(target_family = "wasm") {
+        return; // WASM-SPIKE: no background threads
+    }
     let binary = std::env::current_exe().ok();
     let demo = demo.map(Path::to_path_buf);
     let lock = root.join("Cargo.lock");
@@ -59,7 +62,7 @@ pub(crate) fn digests() -> Digests {
 }
 
 fn sha256_file(path: &Path) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
+    let mut file = vfs::fs::File::open(path).ok()?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).ok()?;
     Some(format!("{:x}", hasher.finalize()))
@@ -84,7 +87,7 @@ pub(crate) struct ThreadFacts {
 /// that it worked.
 #[cfg(target_os = "linux")]
 pub(crate) fn threads() -> Vec<ThreadFacts> {
-    let Ok(entries) = std::fs::read_dir("/proc/self/task") else {
+    let Ok(entries) = vfs::fs::read_dir("/proc/self/task") else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -93,7 +96,7 @@ pub(crate) fn threads() -> Vec<ThreadFacts> {
             continue;
         };
         let status =
-            std::fs::read_to_string(entry.path().join("status")).unwrap_or_else(|_| String::new());
+            vfs::fs::read_to_string(entry.path().join("status")).unwrap_or_else(|_| String::new());
         let field = |key: &str| {
             status
                 .lines()
@@ -125,7 +128,7 @@ pub(crate) fn threads() -> Vec<ThreadFacts> {
 /// table beside it is the whole answer.
 #[cfg(target_os = "linux")]
 pub(crate) fn main_thread_cpus_allowed() -> Option<String> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let status = vfs::fs::read_to_string("/proc/self/status").ok()?;
     status
         .lines()
         .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))

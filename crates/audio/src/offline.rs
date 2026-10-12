@@ -96,7 +96,7 @@ impl OfflineRenderer {
             rejection: AtomicU8::new(0),
             cursor: AtomicU64::new(0.0f64.to_bits()),
             rendered_at: AtomicU64::new(0),
-            requested_at: std::time::Instant::now(),
+            requested_at: web_time::Instant::now(),
             first_device_us: AtomicU64::new(u64::MAX),
             first_device_frame: AtomicU64::new(u64::MAX),
             device_frames: AtomicU64::new(0),

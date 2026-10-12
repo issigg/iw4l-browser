@@ -140,16 +140,21 @@ pub fn decode(delta: &[u8], base: &[u8], base_lens: &FrameSegments) -> Option<Ve
                 let start = out.len();
                 reserve_output(&mut out, len)?;
                 out.resize(start.checked_add(len)?, 0);
-                let mut dctx = zstd::zstd_safe::DCtx::create();
-                dctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
-                    MAX_ZSTD_WINDOW_LOG,
-                ))
-                .ok()?;
-                dctx.ref_prefix(old).ok()?;
-                let got = dctx.decompress(&mut out[start..], packed).ok()?;
-                if got != len {
-                    return None;
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let mut dctx = zstd::zstd_safe::DCtx::create();
+                    dctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
+                        MAX_ZSTD_WINDOW_LOG,
+                    ))
+                    .ok()?;
+                    dctx.ref_prefix(old).ok()?;
+                    let got = dctx.decompress(&mut out[start..], packed).ok()?;
+                    if got != len {
+                        return None;
+                    }
                 }
+                #[cfg(target_family = "wasm")]
+                return None; // WASM-SPIKE: no zstd prefix dictionaries on wasm
             }
             _ => return None,
         }
@@ -157,6 +162,7 @@ pub fn decode(delta: &[u8], base: &[u8], base_lens: &FrameSegments) -> Option<Ve
     input.is_empty().then_some(out)
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub fn compress(delta: &[u8]) -> std::io::Result<Vec<u8>> {
     if delta.len() > MAX_DELTA_INSTRUCTION_BYTES {
         return Err(std::io::Error::new(
@@ -178,6 +184,7 @@ pub fn compress(delta: &[u8]) -> std::io::Result<Vec<u8>> {
     })
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub fn decompress(packed: &[u8], len: usize) -> std::io::Result<Vec<u8>> {
     if len > MAX_DELTA_INSTRUCTION_BYTES
         || packed.len() > crate::transport::protocol::MAX_PACKET_BYTES as usize
@@ -246,6 +253,7 @@ fn put_patch(out: &mut Vec<u8>, new: &[u8], old: &[u8]) {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn compress_against(
     payload: &[u8],
     baseline: &[u8],
@@ -287,4 +295,18 @@ fn take<'a>(input: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
     let (head, rest) = input.split_at(len);
     *input = rest;
     Some(head)
+}
+
+// WASM-SPIKE: zstd unavailable; callers fall back to RAW/uncompressed forms.
+#[cfg(target_family = "wasm")]
+pub fn compress(_delta: &[u8]) -> std::io::Result<Vec<u8>> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+#[cfg(target_family = "wasm")]
+pub fn decompress(_packed: &[u8], _len: usize) -> std::io::Result<Vec<u8>> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+#[cfg(target_family = "wasm")]
+fn compress_against(_payload: &[u8], _baseline: &[u8]) -> Result<Vec<u8>, ()> {
+    Err(())
 }

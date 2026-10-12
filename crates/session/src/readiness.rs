@@ -47,7 +47,9 @@ pub fn decide_readiness(
         |report: Option<WorldReadiness>| report.is_some_and(|report| report.ready_for(generation));
     let graphics_required = role != RuntimeRole::Dedicated && !headless;
     let rendered = !graphics_required || ready(rendering);
-    let presentation = rendered && (!graphics_required || ready(audio));
+    // WASM-SPIKE: audio readiness is not gated on wasm (the sound-bank chain is unverified in the browser).
+    let audio_ok = !graphics_required || cfg!(target_family = "wasm") || ready(audio);
+    let presentation = rendered && audio_ok;
     let advancement = match role {
         RuntimeRole::Listen | RuntimeRole::Dedicated => ready(navigation) && rendered,
         RuntimeRole::Replay => presentation,

@@ -58,6 +58,7 @@ impl Clone for SimWorld {
         ecs.insert_resource(*self.ecs.resource::<crate::LocalPlayerProfile>());
         ecs.insert_resource(self.ecs.resource::<crate::PersistentDataStore>().clone());
         crate::script::copy_state(&self.ecs, &mut ecs);
+        ecs.insert_resource(self.tweaks());
         Self {
             ecs,
             state_entity,
@@ -144,6 +145,17 @@ impl SimWorld {
 
     pub fn set_persistent_data(&mut self, store: crate::PersistentDataStore) {
         self.ecs.insert_resource(store);
+    }
+
+    pub fn set_tweaks(&mut self, tweaks: crate::Tweaks) {
+        self.ecs.insert_resource(tweaks);
+    }
+
+    pub fn tweaks(&self) -> crate::Tweaks {
+        self.ecs
+            .get_resource::<crate::Tweaks>()
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn local_player_profile(&self) -> crate::LocalPlayerProfile {

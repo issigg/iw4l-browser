@@ -1234,7 +1234,9 @@ impl AssetSink for ZoneWalkSink {
         ty: AssetType,
         slot: Ptr,
     ) -> fastfile_iw4::Result<()> {
+        let heap_mark = diag::asset_heap::begin();
         let loaded = load_asset_at_observed(s, ty, slot, self)?;
+        diag::asset_heap::end(ty.name(), heap_mark);
         if ty == AssetType::LightDef {
             self.light_def_table += 1;
             if loaded {
@@ -1465,7 +1467,9 @@ impl AssetSink for CommonWalkSink {
         ty: AssetType,
         slot: Ptr,
     ) -> fastfile_iw4::Result<()> {
+        let heap_mark = diag::asset_heap::begin();
         let loaded = load_asset_at_observed(s, ty, slot, self)?;
+        diag::asset_heap::end(ty.name(), heap_mark);
         if ty == AssetType::LightDef {
             self.light_def_table += 1;
             if loaded {
@@ -1485,6 +1489,7 @@ impl AssetLinkSink for CommonWalkSink {
         slot: Ptr,
         insert_slot: Option<Ptr>,
     ) -> fastfile_iw4::Result<()> {
+        let _heap_scope = diag::asset_heap::scope(ty.name());
         if let Some(sound) = self.sound.as_mut() {
             sound.iw4_loaded(stream, ty, slot, insert_slot);
         }
@@ -1513,31 +1518,31 @@ impl AssetLinkSink for CommonWalkSink {
             if let Some(geometry) = stream.xmodel()
                 && let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok())
             {
-                let skel = asset_model::capture_xmodel_skel(
+                let skel = { let _g = diag::asset_heap::scope("x:skel"); asset_model::capture_xmodel_skel(
                     stream,
                     &self.script_strings,
                     geometry,
                     Some(&self.materials),
                 )
-                .map(|skel| self.shared_surfaces.share_geometry(skel));
+                .map(|skel| self.shared_surfaces.share_geometry(skel)) };
                 if let Some(skel) = &skel {
-                    self.shared_surfaces.retain(stream, geometry, skel.clone());
-                    self.fx_models.capture_shared(skel.clone(), &self.materials);
-                    self.fpv_meshes.capture_shared(None, skel, &self.materials);
-                    self.world_weapons
-                        .capture_shared(None, skel, &self.materials);
-                    self.projectile_meshes
-                        .capture_shared_unclassified(skel, &self.materials);
+                    { let _g = diag::asset_heap::scope("x:shared_surfaces"); self.shared_surfaces.retain(stream, geometry, skel.clone()); }
+                    { let _g = diag::asset_heap::scope("x:fx_models"); self.fx_models.capture_shared(skel.clone(), &self.materials); }
+                    { let _g = diag::asset_heap::scope("x:fpv_meshes"); self.fpv_meshes.capture_shared(None, skel, &self.materials); }
+                    { let _g = diag::asset_heap::scope("x:world_weapons"); self.world_weapons
+                        .capture_shared(None, skel, &self.materials); }
+                    { let _g = diag::asset_heap::scope("x:projectile_meshes"); self.projectile_meshes
+                        .capture_shared_unclassified(skel, &self.materials); }
                 }
                 let asset = skel.map(asset_world::MapXModelSceneAsset::Iw4).unwrap_or(
                     asset_world::MapXModelSceneAsset::Unavailable {
                         reason: "common XModel skeleton capture failed",
                     },
                 );
-                self.scene_models
-                    .insert(asset_world::MapXModelAssetKey(name.to_owned()), asset);
+                { let _g = diag::asset_heap::scope("x:scene_models"); self.scene_models
+                    .insert(asset_world::MapXModelAssetKey(name.to_owned()), asset); }
             }
-            self.models.capture(stream);
+            { let _g = diag::asset_heap::scope("x:models"); self.models.capture(stream); }
         }
         Ok(())
     }

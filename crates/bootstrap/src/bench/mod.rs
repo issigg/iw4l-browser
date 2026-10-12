@@ -27,7 +27,7 @@ mod tables;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use web_time::Instant;
 
 use asset_transport::LoadProgress;
 use bevy::prelude::*;
@@ -71,8 +71,8 @@ pub fn arm() {
 
 fn shell_start(stamp: &str, now: Instant) -> Option<Instant> {
     let stamp = stamp.parse::<u128>().ok()?;
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let elapsed = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .ok()?
         .as_nanos()
         .checked_sub(stamp)?;
@@ -115,12 +115,12 @@ pub fn insert(
     );
     let screenshot = milestones::screenshot_path(artifacts, zone);
     if let Some(parent) = screenshot.parent()
-        && let Err(error) = std::fs::create_dir_all(parent)
+        && let Err(error) = vfs::fs::create_dir_all(parent)
     {
         diag::error!(Launch, "bench: create {}: {error}", parent.display());
         return;
     }
-    let _ = std::fs::remove_file(&screenshot);
+    let _ = vfs::fs::remove_file(&screenshot);
     app.world_mut()
         .get_resource_mut::<CaptureQueue>()
         .expect("CaptureQueue: RenderPlugin must be added before the bench capture")
@@ -256,11 +256,11 @@ fn heading(zone: &str, trace: Option<&Path>, out: &mut Vec<String>) {
 
 fn write_report(artifacts: &Path, lines: &[String]) -> Result<PathBuf, String> {
     let dir = artifacts.join("bench");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
+    vfs::fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     let path = dir.join(format!("{}.txt", stamp()));
     let mut body = lines.join("\n");
     body.push('\n');
-    std::fs::write(&path, body).map_err(|error| format!("write {}: {error}", path.display()))?;
+    vfs::fs::write(&path, body).map_err(|error| format!("write {}: {error}", path.display()))?;
     Ok(path)
 }
 
@@ -281,7 +281,7 @@ fn write_run_package(artifacts: &Path, lines: &[String]) -> Vec<String> {
     let mut body = lines.join("\n");
     body.push('\n');
     let report = dir.join("report.txt");
-    if let Err(error) = std::fs::write(&report, body) {
+    if let Err(error) = vfs::fs::write(&report, body) {
         out.push(format!(
             "run package: {} not written ({error})",
             report.display()
@@ -361,8 +361,8 @@ fn write_run_package(artifacts: &Path, lines: &[String]) -> Vec<String> {
 /// Seconds since the epoch, zero-padded: the reports sort by name in the order
 /// they were run, on every platform, with no date library.
 fn stamp() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let seconds = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or(0);
     format!("{seconds:012}")

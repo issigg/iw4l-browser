@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::File;
+use vfs::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -121,7 +121,7 @@ impl SoundAssetBank {
 
 pub fn open_sound_asset_banks(sound_dir: &Path) -> (Vec<SoundAssetBank>, Vec<String>) {
     let mut report = Vec::new();
-    let Ok(entries) = std::fs::read_dir(sound_dir) else {
+    let Ok(entries) = vfs::fs::read_dir(sound_dir) else {
         report.push(format!("cannot read {}", sound_dir.display()));
         return (Vec::new(), report);
     };

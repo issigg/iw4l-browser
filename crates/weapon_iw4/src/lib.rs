@@ -64,7 +64,7 @@ pub use kick::{
     GunRecoilPlacementState, GunRecoilResponse, MODEL_PEAK_SECONDS, ViewKickRange,
     calculate_weapon_position_gun_recoil, fire_recoil_gun_range, fire_recoil_view_range,
     gun_recoil_angle_contribution, recoil_ads_weight, start_firing_restrict_kick_time,
-    weapon_fire_recoil,
+    set_recoil_percent, weapon_fire_recoil,
 };
 pub use melee::{
     BUTTON_MELEE, MELEE_TRACE_OFFSETS, MeleeChargeState, MeleeWeaponFacts,

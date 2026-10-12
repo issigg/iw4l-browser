@@ -5,7 +5,6 @@ use bevy::{
     prelude::*,
     render::{
         RenderPlugin as BevyRenderPlugin,
-        pipelined_rendering::PipelinedRenderingPlugin,
         settings::{RenderCreation, WgpuFeatures, WgpuSettings},
     },
 };
@@ -42,11 +41,11 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
         .add_plugins(ConsolePlugin)
         .add_plugins(net)
         .add_plugins((BotsPlugin, HudPlugin))
-        .add_plugins(AudioPlugin)
         .add_plugins(ReplayPlugin)
         .add_plugins(theater::TheaterPlugin)
         .add_plugins(RenderPlugin)
         .add_plugins(SessionPlugin);
+    app.add_plugins(AudioPlugin);
 
     if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
         // Measured: multithreaded render schedules compete with camera prepare's own
@@ -94,12 +93,21 @@ pub fn default_plugins_with_quiet_log(mut window: WindowPlugin) -> bevy::app::Pl
         primary.desired_maximum_frame_latency = core::num::NonZeroU32::new(frame_latency());
     }
     let mut wgpu = WgpuSettings::default();
-    wgpu.features |= WgpuFeatures::TEXTURE_FORMAT_16BIT_NORM
-        | WgpuFeatures::TEXTURE_COMPRESSION_BC
-        | WgpuFeatures::POLYGON_MODE_LINE
-        | WgpuFeatures::TEXTURE_BINDING_ARRAY
-        | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-        | WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY;
+    // WASM-SPIKE: WebGPU has no binding arrays, 16-bit-norm formats or line polygon mode.
+    #[cfg(target_family = "wasm")]
+    {
+        wgpu.features |=
+            WgpuFeatures::TEXTURE_COMPRESSION_BC | WgpuFeatures::FLOAT32_FILTERABLE;
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        wgpu.features |= WgpuFeatures::TEXTURE_FORMAT_16BIT_NORM
+            | WgpuFeatures::TEXTURE_COMPRESSION_BC
+            | WgpuFeatures::POLYGON_MODE_LINE
+            | WgpuFeatures::TEXTURE_BINDING_ARRAY
+            | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+            | WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY;
+    }
     let plugins = DefaultPlugins
         .set(window)
         .set(LogPlugin {
@@ -111,10 +119,25 @@ pub fn default_plugins_with_quiet_log(mut window: WindowPlugin) -> bevy::app::Pl
             render_creation: RenderCreation::Automatic(Box::new(wgpu)),
             ..default()
         });
+    // WASM-SPIKE: pipelined rendering needs threads; it does not exist on wasm.
+    #[cfg(target_family = "wasm")]
+    {
+        if web_window::enabled() {
+            // In the worker there is no DOM: our own window backend replaces winit, and gamepads
+            // (a navigator API) are not available.
+            plugins
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::gilrs::GilrsPlugin>()
+                .add(web_window::WebWorkerWindowPlugin)
+        } else {
+            plugins
+        }
+    }
+    #[cfg(not(target_family = "wasm"))]
     if pipelined_rendering() {
         plugins
     } else {
-        plugins.disable::<PipelinedRenderingPlugin>()
+        plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
     }
 }
 

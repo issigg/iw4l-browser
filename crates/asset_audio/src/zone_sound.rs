@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration};
+use web_time::{Instant};
 
 use crate::sound_catalog::SoundCatalog;
 use crate::sound_load_iw5::Iw5SoundCapture;
@@ -202,7 +203,7 @@ fn store() -> &'static Store {
 }
 
 fn store_key(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    vfs::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 struct Claim {

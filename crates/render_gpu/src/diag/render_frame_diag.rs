@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use bevy::platform::time::Instant; // WASM-SPIKE: std Instant panics on wasm
 
 use bevy::diagnostic::{DiagnosticPath, DiagnosticsStore};
 use bevy::ecs::schedule::MainThreadExecutor;
 use bevy::prelude::*;
 use bevy::render::diagnostic::RenderDiagnosticsPlugin;
+#[cfg(not(target_family = "wasm"))]
 use bevy::render::pipelined_rendering::{RenderAppChannels, RenderExtractApp};
 use bevy::render::renderer::{PendingCommandBuffers, RenderGraph, RenderGraphSystems};
 use bevy::render::{Render, RenderApp, RenderSystems};
@@ -1014,6 +1015,10 @@ pub fn register_render_frame_diag(app: &mut App) {
 
 // Mirrors Bevy 0.19 `renderer_extract` to time the ownership boundaries; keep
 // its executor servicing and shutdown semantics when upgrading Bevy.
+#[cfg(target_family = "wasm")]
+fn instrument_pipelined_extract(_app: &mut App) {} // WASM-SPIKE: no pipelined rendering without threads
+
+#[cfg(not(target_family = "wasm"))]
 fn instrument_pipelined_extract(app: &mut App) {
     let Some(extract_app) = app.get_sub_app_mut(RenderExtractApp) else {
         return;

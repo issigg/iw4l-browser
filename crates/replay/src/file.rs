@@ -1,4 +1,4 @@
-use std::fs::File;
+use vfs::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -179,7 +179,7 @@ impl RecordWriter {
         identity: MatchRecordIdentity,
     ) -> Result<Self, ReplayError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            vfs::fs::create_dir_all(parent)?;
         }
         let mut file = BufWriter::new(File::create(path)?);
         file.write_all(&MAGIC)?;

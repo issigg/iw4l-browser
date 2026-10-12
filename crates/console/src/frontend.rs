@@ -18,11 +18,12 @@ pub(crate) struct FrontendState {
     browser_page: usize,
     adverts: Vec<net::MasterAdvert>,
     browser_order: Vec<master_protocol::AdvertId>,
-    browser_notice: Option<(String, std::time::Instant)>,
+    browser_notice: Option<(String, web_time::Instant)>,
     password_advert: Option<net::MasterAdvert>,
     password_joining: bool,
     lobby_password: String,
     rules_seeded: bool,
+    tweaks_loaded: bool,
 }
 
 #[derive(SystemParam)]
@@ -62,6 +63,9 @@ pub(crate) fn register(registry: &mut ConsoleRegistry) {
         "ui_start_match",
         "ui_lobby_privacy",
         "ui_lobby_cheats",
+        "ui_lobby_enemybots",
+        "ui_lobby_friendlybots",
+        "ui_tweak",
         "ui_vote_skip",
         "ui_maps",
         "ui_map_pack",
@@ -108,7 +112,7 @@ pub(crate) fn route(
     mut transition: ResMut<session::SessionSwapRequest>,
     maps: Res<ui::MenuMapList>,
     presentation: Option<Res<ui::frontend::maps::MapPresentation>>,
-    settings: Res<frame::GameSettings>,
+    mut settings: ResMut<frame::GameSettings>,
     localize: Option<Res<asset_game::LocalizeCatalog>>,
     catalog: Option<Res<asset_game::MenuCatalog>>,
     mut services: LobbyServices,
@@ -243,6 +247,26 @@ pub(crate) fn route(
                         })?;
                     }
                     state.public = !state.public;
+                }
+                "ui_lobby_enemybots" | "ui_lobby_friendlybots" => {
+                    if !party.in_lobby || !party.is_host {
+                        return Err("Only the host can change the bot count".into());
+                    }
+                    let (dvar, max) = if command.name == "ui_lobby_enemybots" {
+                        (sim::ENEMY_BOTS_DVAR, ui::MAX_RULE_ENEMY_BOTS)
+                    } else {
+                        (sim::FRIENDLY_BOTS_DVAR, ui::MAX_RULE_FRIENDLY_BOTS)
+                    };
+                    let now = dvars
+                        .get(dvar)
+                        .and_then(|value| value.trim().parse::<u32>().ok())
+                        .unwrap_or(0);
+                    dvars.set(dvar, ((now + 1) % (max + 1)).to_string());
+                }
+                "ui_tweak" => {
+                    let id = command.args.first().map(String::as_str).unwrap_or("");
+                    crate::tweaks::cycle(&mut dvars, id)?;
+                    crate::tweaks::sync_settings(&dvars, &mut settings);
                 }
                 "ui_lobby_cheats" => {
                     if !party.in_lobby || !party.is_host {
@@ -510,7 +534,7 @@ pub(crate) fn route(
                 "ui_frontend_status"
             };
             if status == "ui_browser_status" {
-                state.browser_notice = Some((error.clone(), std::time::Instant::now()));
+                state.browser_notice = Some((error.clone(), web_time::Instant::now()));
             }
             dvars.set(status, &error);
             echo.write(format!("menu: {error}"));
@@ -652,6 +676,18 @@ pub(crate) fn route(
                 "PRIVATE LOBBY"
             }),
     );
+    if !state.tweaks_loaded {
+        state.tweaks_loaded = true;
+        crate::tweaks::load_saved(&mut dvars);
+    }
+    crate::tweaks::refresh_labels(&mut dvars);
+    for (label, text, dvar) in [
+        ("ui_lobby_enemybots", "ENEMY BOTS", sim::ENEMY_BOTS_DVAR),
+        ("ui_lobby_friendlybots", "FRIENDLY BOTS (TEAM MODES)", sim::FRIENDLY_BOTS_DVAR),
+    ] {
+        let count = dvars.get(dvar).unwrap_or("0").trim().to_owned();
+        dvars.set(label, format!("{text}: {count}"));
+    }
     dvars.set(
         "ui_lobby_cheats",
         if cheats.as_ref().is_some_and(|cheats| cheats.0) {

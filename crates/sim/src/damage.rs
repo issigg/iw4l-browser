@@ -681,6 +681,7 @@ pub(crate) fn apply_damage_attempt(
     if amount <= 0 {
         return DamageOutcome::Refused(DamageRefusal::NonPositive);
     }
+    let amount = crate::tweaks::current(world).one_hit_amount(intent.attacker, intent.target, amount);
     crate::script_player::damage(world, tick, intent, amount)
 }
 

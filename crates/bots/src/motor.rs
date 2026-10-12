@@ -12,6 +12,14 @@ const MAX_PITCH_ACCEL_DEG_PER_MS2: f32 = 0.01;
 const FIRE_CONE_DEG: f32 = 8.0;
 const ARRIVE_IN: f32 = 24.0;
 const PITCH_LIMIT: f32 = 70.0;
+/// Bots only strafe while shooting at something closer than this (units).
+const STRAFE_MAX_RANGE: f32 = 1200.0;
+const STRAFE_SPEED: i8 = 64;
+/// Side glances: how long one lasts (ms) and how far it turns the view (degrees).
+const GLANCE_MS: f32 = 700.0;
+const GLANCE_DEG: f32 = 35.0;
+/// Closer than this (units) a bot holds the trigger; farther it fires in bursts.
+const BURST_MIN_RANGE: f32 = 500.0;
 
 #[derive(Clone, Debug)]
 pub struct Motor {
@@ -24,6 +32,13 @@ pub struct Motor {
     acquire_yaw: f32,
     last_look: Option<[f32; 3]>,
     armed: Option<sim::LifeSequence>,
+    strafe_period_ms: i32,
+    strafing: bool,
+    /// Per-bot phases for the aim wobble, glance timing and burst rhythm.
+    phase: [f32; 4],
+    glance_period_ms: i32,
+    burst_on_ms: i32,
+    burst_off_ms: i32,
 }
 
 impl Motor {
@@ -42,6 +57,17 @@ impl Motor {
             acquire_yaw: 0.0,
             last_look: None,
             armed: None,
+            strafe_period_ms: 600 + ((seed >> 20) % 500) as i32,
+            strafing: false,
+            phase: [
+                ((seed >> 5) & 0xff) as f32 / 255.0 * std::f32::consts::TAU,
+                ((seed >> 13) & 0xff) as f32 / 255.0 * std::f32::consts::TAU,
+                ((seed >> 21) & 0xff) as f32 / 255.0 * std::f32::consts::TAU,
+                ((seed >> 29) & 0xff) as f32 / 255.0 * std::f32::consts::TAU,
+            ],
+            glance_period_ms: 2500 + ((seed >> 17) % 3000) as i32,
+            burst_on_ms: 350 + ((seed >> 9) % 350) as i32,
+            burst_off_ms: 200 + ((seed >> 25) % 250) as i32,
         }
     }
 
@@ -67,7 +93,9 @@ impl Motor {
             }
             return MotorReport::Executing;
         }
-        if intent.move_mode == MoveMode::Hold || (cmd.forwardmove == 0 && cmd.rightmove == 0) {
+        if intent.move_mode == MoveMode::Hold
+            || (cmd.forwardmove == 0 && (cmd.rightmove == 0 || self.strafing))
+        {
             if let Some(goal) = intent.move_goal
                 && dist2(obs.self_state.origin, goal) <= ARRIVE_IN * ARRIVE_IN
             {
@@ -95,16 +123,39 @@ impl Motor {
             self.last_look = Some(at);
             self.acquire_yaw *= 0.85_f32.powf(dt / 16.0);
             let desire = look_angles(obs.eye(), at);
+            let t = obs.time_ms.max(0) as f32 / 1000.0;
+            // Small natural wobble of the crosshair, different for every bot.
+            let wobble_yaw = 0.7
+                * ((t * 1.3 + self.phase[0]).sin() + 0.5 * (t * 2.9 + self.phase[1]).sin());
+            let wobble_pitch = 0.35
+                * ((t * 1.7 + self.phase[2]).sin() + 0.5 * (t * 3.3 + self.phase[3]).sin());
+            // While walking and not in a fight, glance to the side now and then.
+            let glance = if intent.fire {
+                0.0
+            } else {
+                let cycle = obs.time_ms.max(0) / self.glance_period_ms;
+                let frac = (obs.time_ms.max(0) % self.glance_period_ms) as f32 / GLANCE_MS;
+                if frac < 1.0 {
+                    let side = if (cycle.wrapping_mul(2654435761u32 as i32) >> 7) & 1 == 0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    side * GLANCE_DEG * (std::f32::consts::PI * frac).sin()
+                } else {
+                    0.0
+                }
+            };
             let (yaw, yaw_vel) = slew_yaw(
                 self.yaw,
-                desire[1] + self.err_yaw + self.acquire_yaw,
+                desire[1] + self.err_yaw + self.acquire_yaw + wobble_yaw + glance,
                 self.yaw_vel,
                 dt,
             );
             self.yaw = yaw;
             self.yaw_vel = yaw_vel;
             let (pitch, pitch_vel) =
-                slew_pitch(self.pitch, desire[0] + self.err_pitch, self.pitch_vel, dt);
+                slew_pitch(self.pitch, desire[0] + self.err_pitch + wobble_pitch, self.pitch_vel, dt);
             self.pitch = pitch;
             self.pitch_vel = pitch_vel;
         } else {
@@ -126,6 +177,25 @@ impl Motor {
             ];
             (forwardmove, rightmove) = wish_to_move(self.yaw, wish);
         }
+        // Shooting at someone close while otherwise standing still: sidestep in short
+        // alternating steps so the bot does not stand still in a fight.
+        self.strafing = intent.fire
+            && forwardmove == 0
+            && rightmove == 0
+            && !unsupported
+            && !intent.crouch
+            && !intent.reload
+            && !intent.use_button
+            && intent
+                .look_at
+                .is_some_and(|at| dist2(obs.eye(), at) < STRAFE_MAX_RANGE * STRAFE_MAX_RANGE);
+        if self.strafing {
+            rightmove = if (obs.time_ms.max(0) / self.strafe_period_ms) % 2 == 0 {
+                STRAFE_SPEED
+            } else {
+                -STRAFE_SPEED
+            };
+        }
         // A requested weapon has to survive the whole change: the simulator
         // settles a dropping hand back to ready when the command asks for the
         // weapon it is already lowering.
@@ -144,8 +214,17 @@ impl Motor {
             weapon_mapped: weapon,
             ..UserCmd::default()
         };
-        if intent.fire && self.weapon_on_target(obs, intent) {
+        let on_target = self.weapon_on_target(obs, intent);
+        let burst = self.burst_open(obs, intent);
+        if intent.fire && on_target && burst {
             cmd.buttons |= buttons::ATTACK;
+        } else if intent.fire {
+            // WASM-SPIKE diagnostic (temporary)
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 6 == 0 {
+                let d = intent.look_at.map(|at| look_angles(obs.eye(), at));
+                diag::info!(Sim, "bots holdfire id={} t={} strafing={} on_target={on_target} burst={burst} weapon={} ammo={} yaw={:.1} pitch={:.1} desire={:?} dist={:?}", obs.self_state.id.0, obs.time_ms, self.strafing, obs.self_state.weapon, obs.self_state.ammo_clip, self.yaw, self.pitch, d, intent.look_at.map(|at| dist2(obs.eye(), at).sqrt()));
+            }
         }
         if intent.use_button {
             cmd.buttons |= buttons::USE;
@@ -169,6 +248,18 @@ impl Motor {
             cmd.buttons |= buttons::CROUCH;
         }
         cmd
+    }
+
+    /// Far targets get bursts with short pauses instead of a held trigger.
+    fn burst_open(&self, obs: &BotObservation, intent: &BotIntent) -> bool {
+        let Some(at) = intent.look_at else {
+            return true;
+        };
+        if dist2(obs.eye(), at) < BURST_MIN_RANGE * BURST_MIN_RANGE {
+            return true;
+        }
+        let cycle = self.burst_on_ms + self.burst_off_ms;
+        obs.time_ms.max(0) % cycle < self.burst_on_ms
     }
 
     fn weapon_on_target(&self, obs: &BotObservation, intent: &BotIntent) -> bool {

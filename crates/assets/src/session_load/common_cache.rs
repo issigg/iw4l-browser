@@ -128,7 +128,7 @@ pub struct CommonSet {
     pub(super) retained: std::sync::Mutex<asset_material::material_images::PayloadRetention>,
     pub(super) cac_tables: Vec<(asset_core::AssetNamespace, asset_game::CapturedStringTable)>,
     pub(super) prepared_ms: f32,
-    pub(super) ready_at: std::time::Instant,
+    pub(super) ready_at: web_time::Instant,
 }
 
 impl CommonSet {
@@ -227,7 +227,11 @@ impl Drop for FlightGuard {
             *slot = None;
         }
         drop(slot);
+        #[cfg(not(target_family = "wasm"))]
         let _ = flight.set.set_blocking(None);
+        // WASM-SPIKE: set_blocking is unavailable on wasm; an uninitialised cell's set() is ready immediately.
+        #[cfg(target_family = "wasm")]
+        let _ = bevy::tasks::futures_lite::future::block_on(bevy::tasks::futures_lite::future::poll_once(flight.set.set(None)));
     }
 }
 
@@ -357,7 +361,7 @@ pub async fn load_shell_common(games: asset_transport::GamesRoot) -> ShellCommon
 }
 
 async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     let progress = LoadProgress::default();
     let pool = load_pool();
     let anchor = key.runtime.clone();
@@ -937,7 +941,7 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
         retained: std::sync::Mutex::new(Default::default()),
         cac_tables,
         prepared_ms,
-        ready_at: std::time::Instant::now(),
+        ready_at: web_time::Instant::now(),
     })
 }
 

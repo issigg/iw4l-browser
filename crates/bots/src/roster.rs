@@ -271,5 +271,7 @@ pub fn default_class_index(seed: u64, client: ClientId, pick: u32) -> u8 {
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add(u64::from(client.0).wrapping_mul(0xBF58_476D_1CE4_E5B9))
         .wrapping_add(u64::from(pick).wrapping_mul(0x94D0_49BB_1331_11EB));
-    (mix >> 33) as u8
+    // class0..class3 are Grenadier, First Recon, Overwatch and Scout Sniper; class4 is Riot
+    // Control (riot shield + PP2000), which bots never take.
+    ((mix >> 33) % 4) as u8
 }

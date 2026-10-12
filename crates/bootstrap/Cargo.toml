@@ -19,6 +19,8 @@ bevy-debug = ["bevy/debug", "bevy/track_location"]
 bevy-trace = ["bevy/trace", "bevy/trace_chrome"]
 
 [dependencies]
+web-time = "1"
+vfs.workspace = true
 bevy.workspace = true
 asset_audio.workspace = true
 asset_core.workspace = true
@@ -51,3 +53,6 @@ libc = "0.2"
 
 [lints]
 workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+web_window.workspace = true

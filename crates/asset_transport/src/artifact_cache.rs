@@ -1,5 +1,6 @@
+use vfs::VfsExt as _;
 use std::collections::HashSet;
-use std::fs;
+use vfs::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,7 +19,19 @@ fn cache_budget_bytes() -> u64 {
     })
 }
 
+/// Kinds small and expensive enough to persist in the browser (see `vfs::blobcache`). Images and
+/// audio stay out: their "disk" is the in-memory overlay, so storing them would only duplicate
+/// them in RAM.
+#[cfg(target_family = "wasm")]
+fn web_persisted(kind: &str, key: &str) -> bool {
+    matches!(kind, "wgsl" | "nav" | "localize" | "mips") && key_ok(key)
+}
+
 pub fn cache_get(kind: &str, key: &str) -> Option<Vec<u8>> {
+    #[cfg(target_family = "wasm")]
+    if web_persisted(kind, key) {
+        return vfs::blobcache::get(&format!("{kind}/{key}"));
+    }
     let path = cache_path(kind, key).ok()?;
     fs::read(path).ok()
 }
@@ -31,6 +44,39 @@ pub fn cache_put(kind: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
     cache_put_with(kind, key, |file| file.write_all(bytes))
 }
 
+// WASM-SPIKE: the "disk" is the in-memory overlay, so most entries would only duplicate the data
+// in RAM (every decoded image was being stored twice). The small derived kinds go to the page's
+// persistent store instead.
+#[cfg(target_family = "wasm")]
+pub fn cache_put_with(
+    kind: &str,
+    key: &str,
+    write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<(), String> {
+    if !web_persisted(kind, key) {
+        return Ok(());
+    }
+    let scratch = PathBuf::from(format!("/artifacts/cache/_scratch/{kind}-{key}.tmp"));
+    if let Some(parent) = scratch.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("cache mkdir: {error}"))?;
+    }
+    let result = (|| -> std::io::Result<Vec<u8>> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&scratch)?;
+        write(&mut file)?;
+        drop(file);
+        fs::read(&scratch)
+    })();
+    let _ = fs::remove_file(&scratch);
+    let bytes = result.map_err(|error| format!("cache write {kind}/{key}: {error}"))?;
+    vfs::blobcache::put(&format!("{kind}/{key}"), &bytes);
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub fn cache_put_with(
     kind: &str,
     key: &str,
@@ -59,7 +105,7 @@ pub fn cache_put_with(
     match fs::rename(&tmp, &path) {
         Ok(()) => {}
 
-        Err(_) if path.exists() => {
+        Err(_) if path.vexists() => {
             let _ = fs::remove_file(&tmp);
         }
         Err(error) => {
@@ -78,7 +124,7 @@ pub fn cache_put_with(
 fn unique_temp(parent: &Path, key: &str) -> Result<PathBuf, String> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let n = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    Ok(parent.join(format!("{key}.{}.{n:x}.tmp", std::process::id())))
+    Ok(parent.join(format!("{key}.{}.{n:x}.tmp", vfs::process_id())))
 }
 
 pub struct CacheFlight {
@@ -147,6 +193,9 @@ fn request_sweep() {
             return;
         };
 
+        if cfg!(target_family = "wasm") {
+            return; // WASM-SPIKE: no background threads
+        }
         let _ = std::thread::Builder::new()
             .name("iw4l cache sweep".to_owned())
             .spawn(move || sweep(&root.join("cache"), cache_budget_bytes()));
@@ -156,7 +205,7 @@ fn request_sweep() {
 fn sweep(cache: &Path, budget: u64) {
     let mut entries = Vec::new();
     let mut total = 0u64;
-    let stale_temp = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let stale_temp = web_time::SystemTime::now() - std::time::Duration::from_secs(3600);
     let mut stack = vec![cache.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(listing) = fs::read_dir(&dir) else {
@@ -165,11 +214,11 @@ fn sweep(cache: &Path, budget: u64) {
         for entry in listing.filter_map(Result::ok) {
             let path = entry.path();
             let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
+            if meta.vdir() {
                 stack.push(path);
                 continue;
             }
-            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            let modified = meta.modified().unwrap_or(web_time::UNIX_EPOCH);
 
             if path.extension().is_some_and(|ext| ext == "tmp") {
                 if modified < stale_temp {

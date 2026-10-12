@@ -6,6 +6,8 @@ license.workspace = true
 description = "Our console: input, parsing, execution, cvar storage, coverage report."
 
 [dependencies]
+web-time = "1"
+vfs.workspace = true
 getrandom = "0.3"
 master_protocol.workspace = true
 diag.workspace = true

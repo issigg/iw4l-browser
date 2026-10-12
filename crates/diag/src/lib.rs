@@ -1,4 +1,32 @@
+
+// WASM-SPIKE: stderr goes nowhere on wasm32-unknown-unknown; send it to the browser console.
+#[cfg(target_family = "wasm")]
+mod web_console {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    unsafe extern "C" {
+        #[wasm_bindgen(js_namespace = console, js_name = error)]
+        pub fn error(s: &str);
+    }
+}
+#[cfg(target_family = "wasm")]
+macro_rules! web_eprintln {
+    ($($arg:tt)*) => {
+        web_console::error(&format!(
+            "[{}M live {}M] {}",
+            core::arch::wasm32::memory_size(0) / 16,
+            crate::alloc_count::process_live_heap_bytes().unwrap_or(0) >> 20,
+            format!($($arg)*)
+        ))
+    };
+}
+#[cfg(not(target_family = "wasm"))]
+macro_rules! web_eprintln {
+    ($($arg:tt)*) => { eprintln!($($arg)*) };
+}
+
 mod alloc_count;
+pub mod asset_heap;
 pub mod exit;
 pub mod gap;
 pub mod wgsl_dump;
@@ -9,8 +37,9 @@ pub use alloc_count::{
     process_live_heap_bytes, release_freed_heap,
 };
 
+use vfs::fs::{File, OpenOptions};
+
 use std::{
-    fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -107,8 +136,8 @@ fn link_latest(path: &Path) -> Option<PathBuf> {
     let link = dir.join(LATEST_LOG_NAME);
     #[cfg(unix)]
     {
-        match std::fs::symlink_metadata(&link) {
-            Ok(md) if md.is_symlink() => std::fs::remove_file(&link).ok()?,
+        match vfs::fs::symlink_metadata(&link) {
+            Ok(md) if md.is_symlink() => vfs::fs::remove_file(&link).ok()?,
             Ok(_) => return None,
             Err(_) => {}
         }
@@ -118,12 +147,12 @@ fn link_latest(path: &Path) -> Option<PathBuf> {
     #[cfg(not(unix))]
     {
         // A symlink needs a privilege Windows withholds by default; a hard link does not.
-        match std::fs::remove_file(&link) {
+        match vfs::fs::remove_file(&link) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return None,
         }
-        std::fs::hard_link(path, &link).ok()?;
+        vfs::fs::hard_link(path, &link).ok()?;
         Some(link)
     }
 }
@@ -139,7 +168,7 @@ pub fn init_log(artifacts_root: &Path) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| artifacts_root.join("logs").join(format!("{stamp}.log")));
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ = vfs::fs::create_dir_all(parent);
     }
     let file = OpenOptions::new()
         .create(true)
@@ -150,7 +179,7 @@ pub fn init_log(artifacts_root: &Path) -> PathBuf {
     let (traces, traces_path) = match std::env::var_os("IW4L_TRACES_DIR") {
         Some(dir) => {
             let dir = PathBuf::from(dir);
-            let _ = std::fs::create_dir_all(&dir);
+            let _ = vfs::fs::create_dir_all(&dir);
             let tp = dir.join(format!("{stamp}.jsonl"));
             let f = OpenOptions::new().create(true).append(true).open(&tp).ok();
             (f, Some(tp))
@@ -220,9 +249,9 @@ pub fn exit_launch_error(message: &str) -> ! {
     {
         if let Some(file) = state.file.as_mut() {
             let _ = file.flush();
-            eprintln!("log: {}", state.file_path.display());
+            web_eprintln!("log: {}", state.file_path.display());
         } else {
-            eprintln!("log unavailable: {}", state.file_path.display());
+            web_eprintln!("log unavailable: {}", state.file_path.display());
         }
     }
     #[cfg(windows)]
@@ -283,7 +312,7 @@ fn emit_raw(
     };
 
     if lvl <= state.stderr_threshold {
-        eprintln!("{text}");
+        web_eprintln!("{text}");
     }
     if lvl <= state.file_threshold
         && let Some(file) = state.file.as_mut()
@@ -325,7 +354,7 @@ pub fn write_event(
     fields: Option<&serde_json::Value>,
 ) {
     let Some(sink) = SINK.get() else {
-        eprintln!("{}  {}  {msg}", ch.as_str(), lvl.as_str());
+        web_eprintln!("{}  {}  {msg}", ch.as_str(), lvl.as_str());
         return;
     };
     let Ok(mut state) = sink.lock() else {
@@ -393,7 +422,7 @@ pub fn script_boundary(name: &str, detail: &str) {
 fn controller_line(prefix: &str, name: &str, detail: &str) {
     let line = format!(
         "{prefix}: {name} pid={} ns={}{detail}",
-        std::process::id(),
+        vfs::process_id(),
         process_elapsed_ns()
     );
     write_event(Channel::Launch, Level::Info, &line, None, None);

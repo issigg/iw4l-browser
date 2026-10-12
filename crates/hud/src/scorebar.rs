@@ -33,7 +33,7 @@ pub(crate) fn spawn_scorebar(root: &mut ChildSpawnerCommands) {
 
 pub(crate) fn milliseconds() -> u32 {
     use std::sync::OnceLock;
-    use std::time::Instant;
+    use web_time::Instant;
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     const UPTIME_BIAS_MS: u32 = 60_000;

@@ -1,0 +1,15 @@
+[package]
+name = "web_window"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "WASM-SPIKE: Bevy window backend for a dedicated worker rendering to an OffscreenCanvas, driven by page messages."
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+bevy.workspace = true
+wasm-bindgen = "=0.2.129"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["OffscreenCanvas"] }
+serde_json = "1"
+raw-window-handle = "0.6"
+smol_str = "0.2"

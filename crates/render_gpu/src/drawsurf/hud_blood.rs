@@ -181,13 +181,40 @@ impl BloodPortGpu {
             .as_ref()
             .is_none_or(|(cached, _)| *cached != key)
         {
-            let group = table.views_bind_group(
-                device,
-                &cache.get_bind_group_layout(&self.textures_layout),
-                "iw4_blood_textures",
-                &[&color.texture_view, &mask.texture_view],
-                &[&color.sampler, &mask.sampler],
-            );
+            let group = if d3d9_sm3::PER_SLOT_TEXTURES {
+                let registers: Vec<u16> = self
+                    .blood
+                    .film
+                    .port
+                    .abi()
+                    .samplers
+                    .iter()
+                    .map(|binding| binding.register)
+                    .collect();
+                let words: Vec<u32> = self
+                    .blood
+                    .texture_slots
+                    .iter()
+                    .map(|&slot| d3d9_sm3::texture_slot_word(u16::from(slot), u16::from(slot)))
+                    .collect();
+                table.views_bind_group_per_slot(
+                    device,
+                    &cache.get_bind_group_layout(&self.textures_layout),
+                    "iw4_blood_textures",
+                    &registers,
+                    &words,
+                    &[&color.texture_view, &mask.texture_view],
+                    &[&color.sampler, &mask.sampler],
+                )
+            } else {
+                table.views_bind_group(
+                    device,
+                    &cache.get_bind_group_layout(&self.textures_layout),
+                    "iw4_blood_textures",
+                    &[&color.texture_view, &mask.texture_view],
+                    &[&color.sampler, &mask.sampler],
+                )
+            };
             self.textures = Some((key, group));
         }
         self.textures.as_ref().expect("built above").1.clone()

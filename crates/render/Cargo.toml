@@ -6,6 +6,8 @@ license.workspace = true
 description = "Snapshot to pixels: scene, viewmodel, effects. No game logic."
 
 [dependencies]
+web-time = "1"
+vfs.workspace = true
 diag.workspace = true
 bevy.workspace = true
 fx.workspace = true

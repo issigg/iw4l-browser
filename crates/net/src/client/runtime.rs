@@ -907,9 +907,14 @@ pub fn sample_client_input(
                 world.trace_world(eye, point, [0.0; 3], [0.0; 3], hud_iw4::OVERHEAD_TRACE_MASK);
             hit.fraction >= 1.0 && hit.startsolid == 0
         };
+        // The camera looks along cmd angles plus the player's delta_angles.
         let angles = [
-            look.angles[0] as f32 / input_iw4::ANGLE2SHORT,
-            look.angles[1] as f32 / input_iw4::ANGLE2SHORT,
+            look.angles[0] as f32 / input_iw4::ANGLE2SHORT
+                + ps.delta_angles[0]
+                + if aim.live { aim.view_offset[0] } else { 0.0 },
+            look.angles[1] as f32 / input_iw4::ANGLE2SHORT
+                + ps.delta_angles[1]
+                + if aim.live { aim.view_offset[1] } else { 0.0 },
         ];
         let (sp, cp) = angles[0].to_radians().sin_cos();
         let (sy, cy) = angles[1].to_radians().sin_cos();
@@ -923,7 +928,7 @@ pub fn sample_client_input(
             d[0] * forward[0] + d[1] * forward[1] + d[2] * forward[2] + radius >= 0.0
         };
         let mut targets: Vec<crate::client::pad_aim::AimTarget> = Vec::new();
-        if actions.pad_aim_assist > 0 {
+        if actions.pad_aim_assist > 0 || actions.mouse_aim_assist > 0 {
             const RADIUS: f32 = 10.0;
             let snapshot = presented.snapshot();
             let team = |id: sim::ClientId| {
@@ -945,7 +950,11 @@ pub fn sample_client_input(
                 };
                 let o = other.origin;
                 let head = [o[0], o[1], o[2] + other.view_height_current];
-                if !in_front(o, RADIUS) || !visible(head) {
+                if !in_front(o, RADIUS) {
+                    continue;
+                }
+                let chest = [o[0], o[1], o[2] + other.view_height_current * 0.6];
+                if !(visible(head) || visible(chest)) {
                     continue;
                 }
                 let top = other.view_height_current + 8.0;
@@ -954,6 +963,7 @@ pub fn sample_client_input(
                     mins: [o[0] - RADIUS, o[1] - RADIUS, o[2]],
                     maxs: [o[0] + RADIUS, o[1] + RADIUS, o[2] + top],
                     aim: [o[0], o[1], o[2] + top * 0.75],
+                    chest: [o[0], o[1], o[2] + top * 0.6],
                     velocity: other.velocity,
                 });
             }
@@ -961,6 +971,9 @@ pub fn sample_client_input(
         let ranges = world
             .weapon_combat_row(playerstate_iw4::get_viewmodel_weapon_index(ps))
             .map_or(weapon_iw4::AimAssistRanges::NONE, |facts| facts.aim_assist);
+        let fire_time_ms = world
+            .weapon_combat_row(playerstate_iw4::get_viewmodel_weapon_index(ps))
+            .map_or(0, |facts| facts.fire_time_ms);
         let view = crate::client::pad_aim::AimView {
             eye,
             angles,
@@ -969,14 +982,19 @@ pub fn sample_client_input(
             fov_scale: actions.fov_scale.max(0.01),
             ranges,
             dt: cls.frametime_secs(),
+            firing: actions.client.kb.attack.active,
+            fire_time_ms,
         };
         let ads = actions.client.using_ads || actions.client.kb.speed.active;
         crate::client::pad_aim::pad_look_frame(&mut actions, &view, &targets, ads);
+        crate::client::pad_aim::mouse_look_frame(&mut actions, &view, &targets);
     } else {
         actions.pad_look_delta = [0.0; 2];
+        actions.mouse_pull = [0.0; 2];
     }
     if frozen {
         actions.pad_look_delta = [0.0; 2];
+        actions.mouse_pull = [0.0; 2];
     }
     let choose_direction = presented
         .snapshot()
@@ -1762,9 +1780,9 @@ pub fn publish_presented(
     phase: Option<ResMut<crate::UpdatePhaseCensus>>,
     trace: Option<ResMut<ClientPhaseTrace>>,
 ) {
-    let publish_started = std::time::Instant::now();
+    let publish_started = web_time::Instant::now();
     struct PublishStamp<'a> {
-        started: std::time::Instant,
+        started: web_time::Instant,
         phase: Option<ResMut<'a, crate::UpdatePhaseCensus>>,
     }
     impl Drop for PublishStamp<'_> {

@@ -1,3 +1,4 @@
+use vfs::VfsExt as _;
 use std::path::{Path, PathBuf};
 
 use net::{Frame, SnapshotDecoder, SnapshotEncoder, Transport, frame_from_tick};
@@ -15,15 +16,15 @@ pub fn auto_demo_name(index: u32) -> String {
 pub fn next_free_demo_name(artifacts_root: &Path) -> String {
     for index in 0..10_000u32 {
         let name = auto_demo_name(index);
-        if !demo_path(artifacts_root, &name).exists() {
+        if !demo_path(artifacts_root, &name).vexists() {
             return name;
         }
     }
 
     format!(
         "demo{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or_default()
     )

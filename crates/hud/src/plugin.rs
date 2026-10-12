@@ -1,5 +1,5 @@
 use frame::ScopeApp;
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use frame::{AppScreen, LaunchIdentity, LaunchReport, LifeFrontPublished, LifeStarted, UiDraw};

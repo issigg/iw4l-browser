@@ -368,6 +368,8 @@ fn run_players_system(ecs: &mut World) {
             let (melee_delay_ms, melee_charge_delay_ms) = facts
                 .map(|f| (f.melee_delay_ms, f.melee_charge_delay_ms))
                 .unwrap_or((0, 0));
+            let tweaks = crate::tweaks::current(&mut world);
+            let local_tweaks = *id == crate::tweaks::LOCAL_TWEAK_CLIENT;
             let mut context = pmove_context(
                 old_buttons,
                 scales,
@@ -388,6 +390,9 @@ fn run_players_system(ecs: &mut World) {
                     .and_then(|m| m.shellshock.as_ref())
                     .is_some_and(|shock| shock.movement),
             );
+            if local_tweaks {
+                context.walk.jump.jump_height *= tweaks.jump_pct as f32 / 100.0;
+            }
             context.view_angles.unclamped_pitch_bit =
                 ps.link_flags & playerstate_iw4::LINK_FLAGS_WEAPON_VIEW_ONLY != 0;
             crate::script::player_commands(world.ecs(), id.0, cmd.buttons, old_buttons);
@@ -454,6 +459,11 @@ fn run_players_system(ecs: &mut World) {
                     ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
                 }
                 let moved_from = ps.origin;
+                let stock_speed_gravity = (ps.speed, ps.gravity);
+                if local_tweaks {
+                    ps.speed = (ps.speed as f32 * tweaks.speed_pct as f32 / 100.0).round() as _;
+                    ps.gravity = (ps.gravity as f32 * tweaks.gravity_pct as f32 / 100.0).round() as _;
+                }
                 let result = pmove(
                     ps,
                     &mut cmd,
@@ -462,6 +472,7 @@ fn run_players_system(ecs: &mut World) {
                     mantle.as_ref(),
                     mantle.as_ref(),
                 );
+                (ps.speed, ps.gravity) = stock_speed_gravity;
                 let pml = result.pml;
                 let anim_movetype = pml.mantle_movetype.or_else(|| {
                     footsteps_anim_move_type(
@@ -547,6 +558,9 @@ fn run_players_system(ecs: &mut World) {
                 delta.min(200),
                 command.sequence,
             );
+            if tweaks.infinite_ammo && local_tweaks {
+                crate::tweaks::refill_held_ammo(&mut world, *id);
+            }
             if let Some(index) = result_index {
                 assert!(
                     shots.len() <= 2,

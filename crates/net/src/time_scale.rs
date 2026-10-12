@@ -49,8 +49,14 @@ pub(crate) fn apply_time_scale(
             game_ms,
         )
     };
+    let tweak = if role.runs_authority() {
+        authority.as_ref().map_or(1.0, |world| world.0.tweaks().time_scale())
+    } else {
+        1.0
+    };
     time.set_relative_speed(
         plan.filter(|p| p.valid())
-            .map_or(1.0, |p| p.sample(game_ms)),
+            .map_or(1.0, |p| p.sample(game_ms))
+            * tweak as f32,
     );
 }

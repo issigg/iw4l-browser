@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use std::num::NonZeroU32;
 
 use super::gpu_contract::{
@@ -8,7 +9,8 @@ use super::gpu_resources::{DecodedSampler, UploadedTextureBind, UploadedTextureI
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    BindGroup, BindGroupEntry, BindGroupLayoutDescriptor, BindingResource, Extent3d, Sampler,
+    BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindingResource,
+    BindGroupLayoutId, Extent3d, Sampler,
     SamplerDescriptor, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
     TextureView, TextureViewDescriptor, TextureViewDimension, TextureViewId, WgpuSampler,
     WgpuTextureView,
@@ -86,6 +88,10 @@ pub(super) struct ExactTextureTable {
     placeholders: Option<Placeholders>,
     binds: Option<TextureTableBinds>,
 
+    /// Web only: per-draw bind groups (WebGPU has no binding arrays), keyed by the draw's slot
+    /// words. The table still assigns the slot words; this turns them back into resources.
+    slot_binds: Mutex<HashMap<(BindGroupLayoutId, Vec<u32>, bool), BindGroup>>,
+
     pub rebuild_n: u32,
 }
 
@@ -123,6 +129,7 @@ impl ExactTextureTable {
         self.samplers.clear();
         self.sampler_index.clear();
         self.binds = None;
+        self.slot_binds.lock().unwrap().clear();
     }
 
     pub fn slot_word(
@@ -173,6 +180,53 @@ impl ExactTextureTable {
             }
         };
         Ok(d3d9_sm3::texture_slot_word(texture, sampler))
+    }
+
+    /// Per-draw bind group for the web path. `regs` lists the pass's samplers in slot order
+    /// (register, dimension); `slots` are that draw's slot words. `mask_sun` swaps the sun
+    /// shadow map for a placeholder, as the shadow-caster variant of the table does.
+    pub fn slot_bind_group(
+        &self,
+        device: &RenderDevice,
+        layout: &BindGroupLayout,
+        regs: &[(u16, SamplerTextureDimension)],
+        slots: &[u32],
+        mask_sun: bool,
+    ) -> Option<BindGroup> {
+        let key = (layout.id(), slots.to_vec(), mask_sun);
+        if let Some(hit) = self.slot_binds.lock().unwrap().get(&key) {
+            return Some(hit.clone());
+        }
+        let placeholders = self.placeholders.as_ref()?;
+        let mut views: Vec<&TextureView> = Vec::with_capacity(regs.len());
+        let mut samplers: Vec<&Sampler> = Vec::with_capacity(regs.len());
+        for (&(_, dimension), &word) in regs.iter().zip(slots.iter()) {
+            let lane = dimension_lane(dimension);
+            let texture = usize::from((word & 0xffff) as u16);
+            let sampler = usize::from((word >> 16) as u16);
+            let masked = mask_sun && lane == 0 && self.sun_shadow_indices.contains(&(texture as u16));
+            let view = if masked {
+                &placeholders.views[0]
+            } else {
+                self.views[lane].get(texture).unwrap_or(&placeholders.views[lane])
+            };
+            views.push(view);
+            samplers.push(self.samplers.get(sampler).unwrap_or(&placeholders.sampler));
+        }
+        let mut entries = Vec::with_capacity(regs.len() * 2);
+        for (i, &(register, _)) in regs.iter().enumerate() {
+            entries.push(BindGroupEntry {
+                binding: u32::from(register),
+                resource: BindingResource::TextureView(&**views[i]),
+            });
+            entries.push(BindGroupEntry {
+                binding: d3d9_sm3::PER_SLOT_SAMPLER_BASE + u32::from(register),
+                resource: BindingResource::Sampler(&**samplers[i]),
+            });
+        }
+        let group = device.create_bind_group("iw4_texture_slots", layout, &entries);
+        self.slot_binds.lock().unwrap().insert(key, group.clone());
+        Some(group)
     }
 
     pub fn census(&self) -> (usize, usize, usize, usize) {
@@ -246,6 +300,34 @@ impl ExactTextureTable {
                 },
             ],
         )
+    }
+
+    /// Web path for postfx/blood: one entry per sampler register, picking view and sampler by
+    /// the slot word (low half = index into `views`, high half = index into `samplers`).
+    pub fn views_bind_group_per_slot(
+        &mut self,
+        device: &RenderDevice,
+        bgl: &BindGroupLayout,
+        label: &'static str,
+        registers: &[u16],
+        slot_words: &[u32],
+        views: &[&TextureView],
+        samplers: &[&Sampler],
+    ) -> BindGroup {
+        let mut entries = Vec::with_capacity(registers.len() * 2);
+        for (&register, &word) in registers.iter().zip(slot_words.iter()) {
+            let view = views[usize::from((word & 0xffff) as u16).min(views.len() - 1)];
+            let sampler = samplers[usize::from((word >> 16) as u16).min(samplers.len() - 1)];
+            entries.push(BindGroupEntry {
+                binding: u32::from(register),
+                resource: BindingResource::TextureView(&**view),
+            });
+            entries.push(BindGroupEntry {
+                binding: d3d9_sm3::PER_SLOT_SAMPLER_BASE + u32::from(register),
+                resource: BindingResource::Sampler(&**sampler),
+            });
+        }
+        device.create_bind_group(label, bgl, &entries)
     }
 
     fn create_bind_group(

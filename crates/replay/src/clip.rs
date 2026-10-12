@@ -1,3 +1,4 @@
+use vfs::VfsExt as _;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -141,14 +142,14 @@ pub fn clip_demo_path(artifacts_root: &Path, id: &str) -> PathBuf {
 
 pub fn create_clip_dir(artifacts_root: &Path, id: &str) -> Result<PathBuf, ReplayError> {
     let dir = clip_dir(artifacts_root, id);
-    std::fs::create_dir_all(clips_dir(artifacts_root))?;
-    std::fs::create_dir(&dir)?;
+    vfs::fs::create_dir_all(clips_dir(artifacts_root))?;
+    vfs::fs::create_dir(&dir)?;
     Ok(dir)
 }
 
 pub fn rewrite_latest_symlink(artifacts_root: &Path, id: &str) -> Result<(), ReplayError> {
     let clips = clips_dir(artifacts_root);
-    std::fs::create_dir_all(&clips)?;
+    vfs::fs::create_dir_all(&clips)?;
     let latest = clips.join(CLIP_LATEST);
     remove_latest_pointer(&latest)?;
     create_latest_pointer(id, &latest)?;
@@ -157,7 +158,7 @@ pub fn rewrite_latest_symlink(artifacts_root: &Path, id: &str) -> Result<(), Rep
 
 #[cfg(unix)]
 fn remove_latest_pointer(latest: &Path) -> Result<(), std::io::Error> {
-    match std::fs::remove_file(latest) {
+    match vfs::fs::remove_file(latest) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -166,7 +167,7 @@ fn remove_latest_pointer(latest: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(windows)]
 fn remove_latest_pointer(latest: &Path) -> Result<(), std::io::Error> {
-    match std::fs::remove_dir(latest) {
+    match vfs::fs::remove_dir(latest) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -181,6 +182,17 @@ fn create_latest_pointer(id: &str, latest: &Path) -> Result<(), std::io::Error> 
 #[cfg(windows)]
 fn create_latest_pointer(id: &str, latest: &Path) -> Result<(), std::io::Error> {
     std::os::windows::fs::symlink_dir(id, latest)
+}
+
+// WASM-SPIKE: no symlinks on wasm.
+#[cfg(target_family = "wasm")]
+fn remove_latest_pointer(_latest: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+fn create_latest_pointer(_id: &str, _latest: &Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 pub fn clip_manifest(
@@ -205,13 +217,13 @@ pub fn existing_clip_demo(artifacts_root: &Path, requested: &str) -> Option<Path
     let name = sanitize_demo_name(demo_stem(requested)).unwrap_or_else(|| requested.to_owned());
     let id = name.to_ascii_uppercase();
     let path = clip_demo_path(artifacts_root, &id);
-    path.exists().then_some(path)
+    path.vexists().then_some(path)
 }
 
 pub fn resolve_playback_path(artifacts_root: &Path, requested: &str) -> PathBuf {
     let name = sanitize_demo_name(demo_stem(requested)).unwrap_or_else(|| requested.to_owned());
     let demo = demo_path(artifacts_root, &name);
-    if demo.exists() {
+    if demo.vexists() {
         return demo;
     }
     existing_clip_demo(artifacts_root, &name).unwrap_or(demo)

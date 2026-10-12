@@ -1,4 +1,4 @@
-use std::fs::File;
+use vfs::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 use asset_audio::{SabCodec, SabMediaSource};

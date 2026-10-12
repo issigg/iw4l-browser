@@ -1,3 +1,4 @@
+use vfs::VfsExt as _;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +26,7 @@ pub fn load_dotenv() {
         && let Some(dir) = exe.parent()
     {
         let candidate = dir.join(".env");
-        if candidate.is_file() {
+        if candidate.vfile() {
             let _ = dotenvy::from_path(&candidate);
             return;
         }
@@ -35,7 +36,7 @@ pub fn load_dotenv() {
     };
     loop {
         let candidate = dir.join(".env");
-        if candidate.is_file() {
+        if candidate.vfile() {
             let _ = dotenvy::from_path(&candidate);
             return;
         }
@@ -46,12 +47,16 @@ pub fn load_dotenv() {
 }
 
 pub fn games_root_from_env() -> Result<GamesRoot, String> {
+    // WASM-SPIKE: there is no environment in the browser; the dev server mounts the game at /games.
+    #[cfg(target_family = "wasm")]
+    return Ok(GamesRoot(PathBuf::from("/games")));
+    #[cfg(not(target_family = "wasm"))]
     load_dotenv();
     let path = match std::env::var_os("IW4L_GAMES") {
         Some(raw) => PathBuf::from(raw),
         None => default_games_root()?,
     };
-    if !path.is_dir() {
+    if !path.vdir() {
         return Err(format!("IW4L_GAMES is not a directory: {}", path.display()));
     }
     Ok(GamesRoot(path))
@@ -83,7 +88,7 @@ static GAME_FOLDERS: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Ve
 pub fn set_game_folders(folders: Vec<PathBuf>) {
     let folders = folders
         .into_iter()
-        .filter(|folder| folder.join("zone").is_dir())
+        .filter(|folder| folder.join("zone").vdir())
         .collect();
     *GAME_FOLDERS
         .write()
@@ -94,7 +99,7 @@ pub fn game_install_root(picked: &Path) -> PathBuf {
     picked
         .ancestors()
         .take(3)
-        .find(|dir| dir.join("zone").is_dir())
+        .find(|dir| dir.join("zone").vdir())
         .unwrap_or(picked)
         .to_path_buf()
 }
@@ -103,11 +108,11 @@ pub fn folder_holds_game(folder: &Path, game: crate::ZoneGame) -> bool {
     let version = zone_version(game);
     let mut pending = vec![(folder.join("zone"), 0)];
     while let Some((dir, depth)) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = vfs::fs::read_dir(&dir) else {
             continue;
         };
         for path in entries.flatten().map(|entry| entry.path()) {
-            if path.is_dir() {
+            if path.vdir() {
                 if depth < 2 {
                     pending.push((path, depth + 1));
                 }
@@ -156,14 +161,14 @@ pub(crate) fn configured_search_roots(root: &Path) -> Vec<PathBuf> {
     if let Some(library) = root.parent() {
         for title in SIBLING_TITLES {
             let sibling = library.join(title);
-            if sibling != root && sibling.join("zone").is_dir() && !roots.contains(&sibling) {
+            if sibling != root && sibling.join("zone").vdir() && !roots.contains(&sibling) {
                 roots.push(sibling);
             }
         }
     }
     #[cfg(windows)]
     {
-        let Ok(entries) = std::fs::read_dir(root) else {
+        let Ok(entries) = vfs::fs::read_dir(root) else {
             return roots;
         };
         let mut links = entries
@@ -219,10 +224,10 @@ fn shortcut_target_root(link_path: &Path) -> Result<PathBuf, String> {
 
 #[cfg(windows)]
 fn game_root_for_shortcut_target(target: &Path) -> Result<PathBuf, String> {
-    if target.is_dir() {
+    if target.vdir() {
         return Ok(target.to_path_buf());
     }
-    if target.is_file()
+    if target.vfile()
         && let Some(parent) = target.parent()
     {
         return Ok(parent.to_path_buf());
@@ -235,7 +240,7 @@ pub fn peek_zone_version(path: &Path) -> Option<u32> {
 }
 
 fn read_zone_version(path: &Path) -> Result<u32, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut file = vfs::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut header = [0u8; 12];
     use std::io::Read;
     file.read_exact(&mut header)
@@ -281,7 +286,7 @@ fn files_under(roots: Vec<PathBuf>) -> impl Iterator<Item = Result<PathBuf, Stri
             if is_not_game_dir(&path) {
                 continue;
             }
-            let canonical = match std::fs::canonicalize(&path) {
+            let canonical = match vfs::fs::canonicalize(&path) {
                 Ok(path) => path,
                 Err(error) => {
                     return Some(Err(format!("cannot access {}: {error}", path.display())));
@@ -290,17 +295,17 @@ fn files_under(roots: Vec<PathBuf>) -> impl Iterator<Item = Result<PathBuf, Stri
             if !visited.insert(canonical) {
                 continue;
             }
-            let metadata = match std::fs::metadata(&path) {
+            let metadata = match vfs::fs::metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => return Some(Err(format!("cannot stat {}: {error}", path.display()))),
             };
-            if metadata.is_file() {
+            if metadata.vfile() {
                 return Some(Ok(path));
             }
-            if !metadata.is_dir() {
+            if !metadata.vdir() {
                 continue;
             }
-            let entries = match std::fs::read_dir(&path) {
+            let entries = match vfs::fs::read_dir(&path) {
                 Ok(entries) => entries,
                 Err(error) => return Some(Err(format!("cannot read {}: {error}", path.display()))),
             };
@@ -541,7 +546,7 @@ fn find_zone_stem(
                 "zone alias: `{stem}` -> `{prefixed}` (MP stem preferred over bare `{stem}.ff`)"
             );
             found.alias_note = Some(note.clone());
-            match std::fs::metadata(&found.path) {
+            match vfs::fs::metadata(&found.path) {
                 Ok(meta) => diag::info!(Zone, "{note} ({} bytes)", meta.len()),
                 Err(_) => diag::info!(Zone, "{note}"),
             }
@@ -615,7 +620,7 @@ fn find_named_zone_for_tree(zone_ff: &Path, zone: &str) -> Result<ZoneFile, Stri
 pub fn game_root_for_zone(zone_ff: &Path) -> Result<PathBuf, String> {
     let mut cursor = zone_ff.parent();
     while let Some(dir) = cursor {
-        if dir.join("zone").is_dir() {
+        if dir.join("zone").vdir() {
             return Ok(dir.to_path_buf());
         }
         cursor = dir.parent();
@@ -810,7 +815,7 @@ pub fn ensure_artifacts_dir() -> Result<PathBuf, String> {
     let dir = std::env::var_os("IW4L_ARTIFACTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("iw4l-artifacts"));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    vfs::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     Ok(dir)
 }
 
@@ -849,7 +854,7 @@ pub fn find_t6_localized_zones(
 fn t5_localized_zone(dir: &Path, prefix: &str, stem: &str) -> Option<ZoneFile> {
     let zone_name = format!("{prefix}{stem}");
     let path = dir.join(format!("{zone_name}.ff"));
-    path.is_file().then_some(ZoneFile {
+    path.vfile().then_some(ZoneFile {
         path,
         zone_name,
         alias_note: None,

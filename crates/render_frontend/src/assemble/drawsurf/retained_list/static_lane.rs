@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use frame::{WorldGeneration, WorldStamp};
 use render_frame::{BspCameraLane, RetainedDrawItem, RetainedDrawKind};
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 const fn bsp_lane(kind: asset_world::CameraRangeKind) -> BspCameraLane {
     match kind {

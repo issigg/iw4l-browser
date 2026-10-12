@@ -64,7 +64,7 @@ pub(super) async fn walk_prepared_match(
 
     common.start_donor_images();
 
-    let cloning = std::time::Instant::now();
+    let cloning = web_time::Instant::now();
     let CommonProducts {
         scripts: mut iw4_scripts,
         mut t5_scene_models,
@@ -320,7 +320,7 @@ pub(super) async fn walk_prepared_match(
     xanims.absorb_local(map_xanims);
     weapons.resolve_sz_xanim_edges(&xanims);
     let weapon_clip_indices = weapons.bound_weapon_xanim_indices();
-    let clip_prewarm_started = std::time::Instant::now();
+    let clip_prewarm_started = web_time::Instant::now();
     let failed_weapon_clips: Vec<_> = weapon_clip_indices
         .iter()
         .copied()
@@ -674,7 +674,7 @@ pub(super) async fn walk_prepared_match(
         &xanims,
     );
     weapons.resolve_fpv_soldiers(&fpv_meshes, &soldiers);
-    let assembly_started = std::time::Instant::now();
+    let assembly_started = web_time::Instant::now();
     let assemblies = weapons.resolve_fpv_assemblies(&fpv_meshes, &xanims);
     report.push(format!(
         "FPV assemblies: built={} kit sides linked={} refused={} clip track tables={} elapsed_ms={:.1}",

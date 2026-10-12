@@ -1,0 +1,71 @@
+<!doctype html><meta charset=utf-8><title>iw4l-browser</title>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111;color:#ccc;font:13px monospace}canvas{width:100vw!important;height:100vh!important;min-width:0!important;display:block}</style>
+<script>
+// WASM-SPIKE: mirror console output to the dev server so it can be read as a file.
+const q=[];let t=0;
+function flush(){t=0;if(!q.length)return;const b=q.splice(0).join('\n');fetch('/__log',{method:'POST',body:b,keepalive:true}).catch(()=>{});}
+for(const k of ['log','info','warn','error']){const o=console[k].bind(console);console[k]=(...a)=>{o(...a);if(k==='error'&&(String(a[0]).includes('load complete:')||String(a[0]).includes('menu open: iw4l_main')))fetch('/__done').catch(()=>{});q.push('['+k+'] '+a.map(x=>x&&x.stack||String(x)).join(' '));if(!t)t=setTimeout(flush,200);};}
+addEventListener('error',e=>console.error('window error',e.message));
+addEventListener('unhandledrejection',e=>console.error('unhandled rejection',String(e.reason)));
+</script>
+<div id=boot style="position:fixed;left:0;right:0;top:40%;z-index:10;text-align:center;color:#ddd;font:15px monospace"><div id=boottext>starting...</div><div style="margin:10px auto;width:420px;height:10px;background:#333;border-radius:5px;overflow:hidden"><div id=bootbar style="width:0%;height:100%;background:#7c7"></div></div></div>
+<div id=fps style="position:fixed;top:4px;right:8px;z-index:9;color:#9f9;background:#0008;padding:2px 6px;font:12px monospace;pointer-events:none">fps --</div>
+<script type=module>
+import init, {run} from './pkg/web.js';
+import {openBlobStore} from './blobstore.js';
+const wasm = await init();
+console.log('wasm loaded');
+let lastMem=0;
+const memLog=(why)=>{const mb=Math.round(wasm.memory.buffer.byteLength/1048576);if(why||mb!==lastMem){lastMem=mb;console.log('[mem] wasm memory '+mb+' MB'+(why?' ('+why+')':''));}};
+setInterval(()=>memLog(),500);
+addEventListener('error',()=>memLog('at error'));
+{ // FPS counter (page frames, i.e. what the user sees; 0 while a blocking load runs)
+  let frames=0,last=performance.now(),worst=0,prev=last;
+  const el=document.getElementById('fps');
+  const tick=(t)=>{frames++;worst=Math.max(worst,t-prev);prev=t;const dt=t-last;
+    if(dt>=1000){const fps=frames*1000/dt;el.textContent='fps '+fps.toFixed(1)+'  worst '+worst.toFixed(0)+'ms  mem '+Math.round(wasm.memory.buffer.byteLength/1048576)+'MB';
+      if(!window.__fpsLog||t-window.__fpsLog>=2000){window.__fpsLog=t;console.log('[fps] '+fps.toFixed(1)+' worst_frame_ms='+worst.toFixed(0));}
+      frames=0;worst=0;last=t;}
+    requestAnimationFrame(tick);};
+  requestAnimationFrame(tick);
+}
+
+// Prefetch phase: fetch the byte ranges recorded for this map in parallel (progress bar), then start.
+const bootText=document.getElementById('boottext'),bootBar=document.getElementById('bootbar'),bootBox=document.getElementById('boot');
+const paint=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+class RangeCache{
+  constructor(){this.files=new Map();this.bytes=0;this.hits=0;this.misses=0;}
+  add(url,start,data){let l=this.files.get(url);if(!l){l=[];this.files.set(url,l);}l.push({start,end:start+data.length-1,data,served:0});this.bytes+=data.length;}
+  seal(){for(const l of this.files.values())l.sort((a,b)=>a.start-b.start);}
+  read(url,start,end){const l=this.files.get(url);if(l){let lo=0,hi=l.length-1;while(lo<=hi){const m=(lo+hi)>>1;const c=l[m];
+      if(end<c.start)hi=m-1;else if(start>c.end)lo=m+1;else{
+        if(start>=c.start&&end<=c.end){c.served+=end-start+1;const out=c.data.subarray(start-c.start,end-c.start+1);
+          if(c.served>=c.data.length){l.splice(m,1);this.bytes-=c.data.length;}this.hits++;return out;}
+        break;}}}
+    this.misses++;return null;}
+}
+async function prefetch(map){
+  const res=await fetch('/__start?map='+encodeURIComponent(map||'menu'));
+  const man=await res.json();
+  if(!man.files){bootText.textContent='first visit: recording what '+(map||'menu')+' needs (slow once)...';return null;}
+  const jobs=[];for(const [url,ranges] of man.files)for(const [a,b] of ranges)jobs.push([url,a,b]);
+  const cache=new RangeCache();let done=0,next=0;const total=man.total;
+  const t0=performance.now();
+  const worker=async()=>{while(next<jobs.length){const [url,a,b]=jobs[next++];
+    try{const r=await fetch(url,{headers:{Range:'bytes='+a+'-'+b}});const buf=new Uint8Array(await r.arrayBuffer());cache.add(url,a,buf);done+=b-a+1;}
+    catch(e){console.warn('prefetch miss',url,a,b,String(e));}
+    bootBar.style.width=Math.min(100,done*100/total).toFixed(1)+'%';
+    bootText.textContent='loading '+(map||'menu')+': '+Math.round(done/1048576)+' / '+Math.round(total/1048576)+' MB';}};
+  await Promise.all(Array.from({length:24},worker));
+  cache.seal();console.log('[prefetch] '+Math.round(done/1048576)+' MB in '+Math.round(performance.now()-t0)+' ms, '+jobs.length+' requests');
+  return cache;
+}
+await openBlobStore((m)=>console.log(m));
+const map=new URLSearchParams(location.search).get('map')||undefined;
+const cache=await prefetch(map);
+if(cache)globalThis.__iw4_cache=cache;
+bootText.textContent='starting engine (the page may freeze while it loads)...';bootBar.style.width='100%';
+await paint();
+setTimeout(()=>{try { bootBox.style.display='none'; run(map); } catch(e) { console.log('run threw', e); }
+  setInterval(()=>{if(cache)console.log('[prefetch] cache hits='+cache.hits+' misses='+cache.misses+' held_mb='+Math.round(cache.bytes/1048576));},5000);},50);
+</script>

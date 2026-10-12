@@ -6,6 +6,8 @@ license.workspace = true
 description = "Recording and playback of the same frames that go over the wire; theater mode."
 
 [dependencies]
+web-time = "1"
+vfs.workspace = true
 diag.workspace = true
 bevy.workspace = true
 frame.workspace = true

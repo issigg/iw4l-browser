@@ -6,6 +6,8 @@ license.workspace = true
 description = "Weapons, attachments, penetration, localization, menus, teams, and stats."
 
 [dependencies]
+web-time = "1"
+vfs.workspace = true
 gamemode_iw4.workspace = true
 structured_data_iw4.workspace = true
 asset_core.workspace = true

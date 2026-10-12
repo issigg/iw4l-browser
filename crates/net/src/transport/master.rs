@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 use master_protocol::{
@@ -16,6 +17,7 @@ use master_protocol::{
     decode_stream_payload, encode_relay, encode_relay_stream, encode_stream_frame,
     stream_frame_len,
 };
+#[cfg(not(target_family = "wasm"))]
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio_util::sync::CancellationToken;
 
@@ -92,6 +94,7 @@ const DATAGRAM_SEND_BUFFER: usize = 1024 * 1024;
 const QUEUE_POLL: Duration = Duration::from_millis(5);
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(1);
 
+#[cfg(not(target_family = "wasm"))]
 fn blocking_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -200,6 +203,7 @@ impl TransportFault {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn with_connection(
         operation: &'static str,
         role: &'static str,
@@ -274,6 +278,12 @@ struct MasterTarget {
     ca_pem: String,
 }
 
+#[cfg(target_family = "wasm")]
+fn master_target() -> Result<Option<MasterTarget>> {
+    Ok(None) // WASM-SPIKE: no master server on web
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn master_target() -> Result<Option<MasterTarget>> {
     if let Some(community) = updater::selected() {
         return Ok(Some(MasterTarget {
@@ -868,9 +878,7 @@ fn arm_master_browser(
         return;
     }
     let state = Arc::new(Mutex::new(MasterBrowserSnapshot {
-        community_name: updater::selected()
-            .map(|community| community.name.clone())
-            .unwrap_or_default(),
+        community_name: selected_community_name(),
         loading: true,
         have: browser_config.have,
         ..default()
@@ -1031,6 +1039,7 @@ fn apply_master_menu_action(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn browser_worker(
     target: MasterTarget,
     state: Arc<Mutex<MasterBrowserSnapshot>>,
@@ -1471,7 +1480,7 @@ fn observe_master_bridge(
         );
         let temporary = path.with_extension("tmp");
         if let Err(error) =
-            std::fs::write(&temporary, body).and_then(|()| std::fs::rename(&temporary, &path))
+            vfs::fs::write(&temporary, body).and_then(|()| vfs::fs::rename(&temporary, &path))
         {
             diag::warn!(Net, "master status file: {error}");
         }
@@ -1593,12 +1602,14 @@ fn execute_host_match_effects(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn session_worker(kind: SessionKind, ctx: WorkerCtx) -> std::result::Result<(), TransportFault> {
     let runtime = blocking_runtime()
         .map_err(|error| TransportFault::new("runtime", ctx.role, error.to_string()))?;
     runtime.block_on(session_main(kind, ctx))
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn session_main(
     kind: SessionKind,
     ctx: WorkerCtx,
@@ -2865,6 +2876,7 @@ fn pump_local_queues(
     Ok(())
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn bootstrap_egress(
     connection: quinn::Connection,
     mut jobs: tokio::sync::mpsc::Receiver<(frame::MatchKey, MemberId, Vec<u8>)>,
@@ -2912,6 +2924,7 @@ async fn bootstrap_egress(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn datagram_ingress(
     connection: quinn::Connection,
     mailbox: RelayMailbox,
@@ -2971,6 +2984,7 @@ async fn datagram_ingress(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn uni_ingress(
     connection: quinn::Connection,
     bootstrap: Arc<BootstrapLane>,
@@ -3044,6 +3058,7 @@ async fn uni_ingress(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn gameplay_egress(
     connection: quinn::Connection,
     mailbox: RelayMailbox,
@@ -3144,6 +3159,7 @@ async fn gameplay_egress(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn send_bootstrap_stream(
     connection: &quinn::Connection,
     member_id: MemberId,
@@ -3184,6 +3200,7 @@ async fn send_bootstrap_stream(
     Ok(())
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn read_owned_frame(
     mut recv: quinn::RecvStream,
 ) -> (quinn::RecvStream, Result<ControlFrame>) {
@@ -3191,6 +3208,7 @@ async fn read_owned_frame(
     (recv, frame)
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn read_frame(recv: &mut quinn::RecvStream) -> Result<ControlFrame> {
     let mut header = [0_u8; 4];
     recv.read_exact(&mut header).await?;
@@ -3200,11 +3218,13 @@ async fn read_frame(recv: &mut quinn::RecvStream) -> Result<ControlFrame> {
     Ok(decode_stream_payload(&body)?)
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn write_frame(send: &mut quinn::SendStream, frame: &ControlFrame) -> Result<()> {
     send.write_all(&encode_stream_frame(frame)?).await?;
     Ok(())
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn io_timeout<T>(
     cancel: &CancellationToken,
     fut: impl std::future::Future<Output = std::result::Result<T, impl Into<Error>>>,
@@ -3221,6 +3241,7 @@ async fn io_timeout<T>(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn connect(
     target: &MasterTarget,
     cancel: &CancellationToken,
@@ -3340,4 +3361,30 @@ fn refresh_relay_authority_hello(
         );
     }
     hub.hello.content = content;
+}
+
+// WASM-SPIKE: web build has no master/QUIC session; these stand in for the gated I/O.
+#[cfg(not(target_family = "wasm"))]
+fn selected_community_name() -> String {
+    updater::selected()
+        .map(|community| community.name.clone())
+        .unwrap_or_default()
+}
+#[cfg(target_family = "wasm")]
+fn selected_community_name() -> String {
+    String::new()
+}
+#[cfg(target_family = "wasm")]
+fn session_worker(_kind: SessionKind, ctx: WorkerCtx) -> std::result::Result<(), TransportFault> {
+    Err(TransportFault::new("session", ctx.role, "online sessions are unavailable in the browser build"))
+}
+#[cfg(target_family = "wasm")]
+fn browser_worker(
+    _target: MasterTarget,
+    state: Arc<Mutex<MasterBrowserSnapshot>>,
+    _refresh: Arc<AtomicU64>,
+    _cancel: CancellationToken,
+) {
+    state.lock().expect("master browser state poisoned").error =
+        Some("server browser is unavailable in the browser build".into());
 }

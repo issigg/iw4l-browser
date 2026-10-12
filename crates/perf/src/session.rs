@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use perfetto_sdk::heap_buffer::HeapBuffer;
 use perfetto_sdk::pb_msg::{PbMsg, PbMsgWriter};
@@ -114,7 +115,7 @@ pub fn flush() -> Result<Option<PathBuf>, String> {
         .into_inner()
         .unwrap_or_else(|poison| poison.into_inner());
     let trace_path = state.dir.join("trace.pftrace");
-    std::fs::write(&trace_path, &bytes)
+    vfs::fs::write(&trace_path, &bytes)
         .map_err(|error| format!("write {}: {error}", trace_path.display()))?;
     write_manifest(state)?;
     announce(&format!(
@@ -146,7 +147,7 @@ fn write_manifest(state: &SessionState) -> Result<(), String> {
     let path = state.dir.join("manifest.json");
     let bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| format!("encode manifest: {error}"))?;
-    std::fs::write(&path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+    vfs::fs::write(&path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 fn trace_config() -> Vec<u8> {

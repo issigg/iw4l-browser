@@ -62,6 +62,14 @@ pub struct ClientActionInput {
     /// Pitch and yaw, degrees.
     pub pad_look_delta: [f32; 2],
     pub pad_aim_assist: u8,
+    /// 0 off, 1 low, 2 high. Only set while the mouse is the active input.
+    pub mouse_aim_assist: u8,
+    /// Pitch and yaw, degrees. Gentle pull toward a target at level 2.
+    pub mouse_pull: [f32; 2],
+    /// Smoothed pull of the previous frame, and the shot boost state of the mouse assist.
+    pub mouse_pull_prev: [f32; 2],
+    pub mouse_shot_boost: f32,
+    pub mouse_attack_prev: bool,
     pub pad_lockon: Option<u64>,
     pub pad_autoaim: Option<(u64, f32)>,
     pub pad_was_ads: bool,
@@ -99,6 +107,11 @@ impl Default for ClientActionInput {
             pad_turn_rate: [0.0; 2],
             pad_look_delta: [0.0; 2],
             pad_aim_assist: 0,
+            mouse_aim_assist: 0,
+            mouse_pull: [0.0; 2],
+            mouse_pull_prev: [0.0; 2],
+            mouse_shot_boost: 0.0,
+            mouse_attack_prev: false,
             pad_lockon: None,
             pad_autoaim: None,
             pad_was_ads: false,
@@ -194,8 +207,8 @@ pub fn build_usercmd(input: &mut ClientActionInput, look: &LookState, server_tim
         buttons: bits,
         forwardmove: axis_to_move(forward),
         rightmove: axis_to_move(right),
-        mouse_pitch_delta: mouse_pitch + pad_pitch,
-        mouse_yaw_delta: mouse_yaw + pad_yaw,
+        mouse_pitch_delta: mouse_pitch + pad_pitch + (input.mouse_pull[0] * ANGLE2SHORT) as i32,
+        mouse_yaw_delta: mouse_yaw + pad_yaw + (input.mouse_pull[1] * ANGLE2SHORT) as i32,
         key_pitch_delta: 0,
         key_yaw_delta: 0,
         frozen: false,

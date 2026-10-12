@@ -6,6 +6,7 @@ license.workspace = true
 description = "wgpu resources, pipelines, upload, render graph, and submit."
 
 [dependencies]
+web-time = "1"
 asset_iw4.workspace = true
 asset_core.workspace = true
 asset_material.workspace = true

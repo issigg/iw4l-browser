@@ -4,7 +4,7 @@ mod materialization;
 mod sources;
 use decode::{
     DecodedMips, PixelFormat, compressed_mip_bytes, decode_blocks, decode_gfx_image,
-    decode_iwi_cubemap, decode_iwi_mips, decode_iwi_mips_with, take_rgba,
+    decode_iwi_cubemap, decode_iwi_mips, decode_iwi_mips_with, decode_iwi_mips_world, take_rgba,
 };
 pub use disk_cache::mip_cache_cost;
 use materialization::{
@@ -784,6 +784,12 @@ pub fn decode_ui_image(
             .map(|(width, height, rgba)| (width, height, rgba.as_ref().clone())));
     }
     let Some(index) = publication.archive(key.namespace) else {
+        diag::warn!(
+            Zone,
+            "ui-image: no IWD archive published for {} (wanted `{}`)",
+            key.namespace.as_str(),
+            key.name
+        );
         return Ok(None);
     };
     let index = IwdIndex::from_owned(index.clone());
@@ -1039,7 +1045,7 @@ pub fn decode_iwi_texture(
     is_normal: bool,
     use_srgb_reads: bool,
 ) -> Result<Image, String> {
-    let mips = decode_iwi_mips(bytes)?;
+    let mips = decode_iwi_mips_world(bytes)?;
     let wrap = WrapRecipe {
         sampler_state,
         is_normal,
@@ -1471,7 +1477,7 @@ pub fn unapplied_decoded_bytes() -> u64 {
 /// which of the two the time went to.
 fn wait_for_decode_budget() -> (u64, bool) {
     let budget = decode_budget_bytes();
-    let since = std::time::Instant::now();
+    let since = web_time::Instant::now();
     let mut waited = false;
     while UNAPPLIED_BATCHES.load(Ordering::Relaxed) > 0 && gated_payload_bytes() >= budget {
         if since.elapsed() >= BUDGET_WAIT_LIMIT {

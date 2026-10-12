@@ -6,9 +6,9 @@ license.workspace = true
 description = "Our wire: frames, deltas, prediction, interpolation. Not retail's netcode."
 
 [dependencies]
-updater = { path = "../updater" }
+web-time = "1"
+vfs.workspace = true
 structured_data_iw4.workspace = true
-ring = "0.17.14"
 diag.workspace = true
 math_iw4.workspace = true
 frame.workspace = true
@@ -26,11 +26,27 @@ hud_iw4.workspace = true
 perf.workspace = true
 bevy.workspace = true
 master_protocol.workspace = true
+
+# WASM-SPIKE: portable subset
+tokio = { version = "1.47", features = ["macros", "sync", "time", "rt"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+
+# WASM-SPIKE: heavy I/O deps native-only
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+ring = "0.17.14"
+updater = { path = "../updater" }
 quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std"] }
-tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
-tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tokio = { version = "1.47", features = ["net", "rt-multi-thread"] }
 zstd = { version = "0.13", default-features = false }
+
+
+# WASM-SPIKE
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+sha2 = "0.10"
+ed25519-dalek = "2"
 
 [lints]
 workspace = true

@@ -13,7 +13,7 @@ pub(crate) fn supervise(shared: Arc<RenderShared>, shutdown: Arc<AtomicBool>) {
     crate::diagnostics::thread("audio-device");
     let failed = Arc::new(AtomicU8::new(0));
     let mut backoff = Duration::from_millis(20);
-    let mut interrupted_at: Option<std::time::Instant> = None;
+    let mut interrupted_at: Option<web_time::Instant> = None;
     while !shutdown.load(Ordering::Acquire) {
         failed.store(0, Ordering::Release);
         let (error_tx, error_rx) = sync_channel(1);
@@ -28,7 +28,7 @@ pub(crate) fn supervise(shared: Arc<RenderShared>, shutdown: Arc<AtomicBool>) {
                         shared.frame.load(Ordering::Acquire)
                     ));
                 }
-                let opened = std::time::Instant::now();
+                let opened = web_time::Instant::now();
                 let mut last_callback = opened;
                 let mut callbacks = shared.device_callbacks.load(Ordering::Acquire);
                 while !shutdown.load(Ordering::Acquire) && failed.load(Ordering::Acquire) == 0 {
@@ -36,12 +36,12 @@ pub(crate) fn supervise(shared: Arc<RenderShared>, shutdown: Arc<AtomicBool>) {
                     let current = shared.device_callbacks.load(Ordering::Acquire);
                     if current != callbacks {
                         callbacks = current;
-                        last_callback = std::time::Instant::now();
+                        last_callback = web_time::Instant::now();
                     } else if last_callback.elapsed() >= Duration::from_millis(250) {
                         failed.store(4, Ordering::Release);
                     }
                 }
-                interrupted_at = Some(std::time::Instant::now());
+                interrupted_at = Some(web_time::Instant::now());
                 shared.device_active.store(false, Ordering::Release);
                 if crate::diagnostics::enabled() {
                     crate::diagnostics::emit(format!(
@@ -78,8 +78,8 @@ pub(crate) fn supervise(shared: Arc<RenderShared>, shutdown: Arc<AtomicBool>) {
                 );
             }
         }
-        let until = std::time::Instant::now() + backoff;
-        while std::time::Instant::now() < until {
+        let until = web_time::Instant::now() + backoff;
+        while web_time::Instant::now() < until {
             if shutdown.load(Ordering::Acquire) {
                 return;
             }

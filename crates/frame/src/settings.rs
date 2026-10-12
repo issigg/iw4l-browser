@@ -84,6 +84,8 @@ pub struct GameSettings {
     pub pad_curve: u8,
     pub pad_acceleration: bool,
     pub pad_aim_assist: u8,
+    /// 0 off, 1 low, 2 high.
+    pub mouse_aim_assist: u8,
     pub pad_prompts: u8,
     pub pad_vibration: bool,
     pub pad_deadzone_left: f32,
@@ -118,6 +120,7 @@ impl Default for GameSettings {
             pad_curve: 0,
             pad_acceleration: true,
             pad_aim_assist: 0,
+            mouse_aim_assist: 0,
             pad_prompts: 1,
             pad_vibration: true,
             pad_deadzone_left: 0.12,
@@ -177,6 +180,7 @@ impl GameSettings {
         self.pad_stick_layout = self.pad_stick_layout.min(3);
         self.pad_curve = self.pad_curve.min(2);
         self.pad_aim_assist = 0;
+        self.mouse_aim_assist = self.mouse_aim_assist.min(3);
         self.pad_prompts = 1;
         let finite = |v: f32, lo: f32, hi: f32, default: f32| {
             if v.is_finite() {

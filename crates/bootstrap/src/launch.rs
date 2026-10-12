@@ -80,7 +80,7 @@ struct ShellUiImages(asset_material::UiImagePublication);
 struct ShellCommonTask {
     task: bevy::tasks::Task<assets::ShellCommon>,
     perk_table: Option<asset_game::CapturedStringTable>,
-    started: std::time::Instant,
+    started: web_time::Instant,
 }
 
 fn install_class_catalog(
@@ -430,6 +430,11 @@ fn run_menu(
             primary_window: Some(Window {
                 title: "iw4l".into(),
                 resolution: (1280, 720).into(),
+                // WASM-SPIKE: follow the browser window instead of a fixed 1280x720 canvas.
+                #[cfg(target_family = "wasm")]
+                fit_canvas_to_parent: true,
+                #[cfg(target_family = "wasm")]
+                prevent_default_event_handling: true,
                 ..default()
             }),
             ..default()
@@ -438,7 +443,7 @@ fn run_menu(
     app.insert_resource(ShellCommonTask {
         task: shell_common,
         perk_table: menus.string_table("mp/perkTable.csv").cloned(),
-        started: std::time::Instant::now(),
+        started: web_time::Instant::now(),
     })
     .insert_resource(frame::FrontendContentLoading)
     .add_systems(
@@ -659,6 +664,11 @@ fn run_map(
                 },
                 resolution: (ACCEPTANCE_WIDTH, ACCEPTANCE_HEIGHT).into(),
                 present_mode,
+                // WASM-SPIKE: follow the browser window instead of a fixed canvas size.
+                #[cfg(target_family = "wasm")]
+                fit_canvas_to_parent: true,
+                #[cfg(target_family = "wasm")]
+                prevent_default_event_handling: true,
                 ..default()
             }),
             ..default()

@@ -788,7 +788,18 @@ impl ZoneLane for Iw4Lane {
             asset_audio::ZoneGame::Iw4,
             "common census",
         );
+        diag::info!(World, "common census: before walk");
         let walk = load_zone(&mut stream, &mut sink);
+        diag::info!(World, "common census heap: {}", diag::asset_heap::report());
+        diag::info!(
+            World,
+            "common census: walk done: weapons={} fpv={} xanims={} mat_pool={} img_pool={}",
+            sink.weapons.len(),
+            sink.fpv_meshes.len(),
+            sink.xanims.len(),
+            sink.materials.materials.len(),
+            sink.materials.images.len()
+        );
         if let Some(sound) = sink.sound.take() {
             sound.deposit(walk.as_ref().map(|_| ()).map_err(|e| e.to_string()));
         }

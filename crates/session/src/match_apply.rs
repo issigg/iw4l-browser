@@ -162,6 +162,11 @@ pub fn apply_prepared_match(
     }
     match audio_status.as_deref() {
         Some(audio::LoadingAudioStatus::Ready) => {}
+        // WASM-SPIKE: the sound-bank chain is unverified in the browser, so audio
+        // never gates the load there (no sound beats a hung or failed load).
+        #[cfg(target_family = "wasm")]
+        _ => {}
+        #[cfg(not(target_family = "wasm"))]
         Some(audio::LoadingAudioStatus::Failed(error)) => {
             failed.write(frame::MapLoadFailed {
                 request_id: ready.request_id,
@@ -172,6 +177,7 @@ pub fn apply_prepared_match(
             commands.remove_resource::<PreparedMatchReady>();
             return;
         }
+        #[cfg(not(target_family = "wasm"))]
         _ => return,
     }
     // The stage opens a frame before the work so the row is already up when
@@ -192,7 +198,7 @@ pub fn apply_prepared_match(
         return;
     }
     let install_stage = install_stage.take();
-    let install_started = std::time::Instant::now();
+    let install_started = web_time::Instant::now();
     let request_id = ready.request_id;
     let load_key = ready.load_key;
     let zone = std::mem::take(&mut ready.zone);
@@ -393,6 +399,15 @@ pub fn apply_prepared_match(
             .map_err(|error| InstallRefusal::new(format!("Invalid map content: {error}")))?;
         content.set_script_sound_aliases(script_sound_aliases);
         let mut sim = sim::SimWorld::new();
+        let tweaks = sim::Tweaks::from_rules(
+            rules
+                .as_deref()
+                .map_or(&[][..], |rules| &rules.0[..])
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        );
+        weapon_iw4::set_recoil_percent(tweaks.recoil_pct);
+        sim.set_tweaks(tweaks);
         if role.runs_authority()
             && let Some(previous) = previous.as_ref()
         {
@@ -1799,8 +1814,10 @@ fn install_clip_and_player(
         .map(|row| row.lock_reason.clone())
         .collect();
     let classes: Vec<sim::ClassDef> = projected.into_iter().map(|row| row.def).collect();
+    // Bots cannot fire a riot shield, so they never get a preset that carries one.
     let bot_classes: Vec<sim::ClassDef> = frame::showcase_classes()
         .iter()
+        .filter(|preset| !preset.primary.contains("riotshield") && !preset.secondary.contains("riotshield"))
         .enumerate()
         .map(|(index, preset)| {
             let row = ClassRow::from(&preset.into());

@@ -1,6 +1,6 @@
 use super::colour_census_clock;
 use super::shadow_encode::{
-    ShadowPassInputs, clear_empty_shadowmap_sun_partition_zero, record_shadowmap_draws,
+    ShadowPassInputs, ShadowTextureBinds, clear_empty_shadowmap_sun_partition_zero, record_shadowmap_draws,
 };
 use super::{
     Arc, ArenaDirty, ArenaPack, BTreeMap, BspCameraLane, Buffer, ExactColourGeometry,
@@ -1360,7 +1360,12 @@ fn record_shadowmap_spot(
             ..SpotShadowSubmit::default()
         };
     };
-    let table_binds = texture_table.binds(device, registry, table_layout);
+    let per_slot = d3d9_sm3::PER_SLOT_TEXTURES;
+    let table_binds = (!per_slot).then(|| {
+        let binds = texture_table.binds(device, registry, table_layout);
+        (binds.scene.clone(), binds.sun_caster.clone())
+    });
+    let texture_table: &ExactTextureTable = texture_table;
     let diagnostics = context.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
     let encoder = context.command_encoder();
@@ -1388,7 +1393,14 @@ fn record_shadowmap_spot(
                     },
                 ),
                 constants_bind: shadow_arena.gpu.bind_group.as_ref(),
-                textures_bind: &table_binds.scene,
+                textures: match &table_binds {
+                    Some((scene, _)) => ShadowTextureBinds::Table(scene),
+                    None => ShadowTextureBinds::PerSlot {
+                        ports: pipeline_res,
+                        table: texture_table,
+                        mask_sun: false,
+                    },
+                },
                 color_view: &slot.color_view,
                 depth_view: &slot.depth_view,
                 scissor: slot.envelope.scissor,
@@ -2024,7 +2036,12 @@ fn record_shadowmap_sun(
             gpu_span.end(encoder);
             return SunShadowSubmit::refused("TextureTableLayoutMissing");
         };
-        let table_binds = texture_table.binds(device, registry, table_layout);
+        let table_binds =
+            (!d3d9_sm3::PER_SLOT_TEXTURES).then(|| {
+                let binds = texture_table.binds(device, registry, table_layout);
+                (binds.scene.clone(), binds.sun_caster.clone())
+            });
+        let texture_table: &ExactTextureTable = texture_table;
         let world_index = geometry.world_index.as_ref();
         for part in &work.partitions {
             let plan = &static_draws.commands[part.pi];
@@ -2045,7 +2062,14 @@ fn record_shadowmap_sun(
                         },
                     ),
                     constants_bind: shadow_arena.gpu[part.pi].bind_group.as_ref(),
-                    textures_bind: &table_binds.sun_caster,
+                    textures: match &table_binds {
+                        Some((_, sun_caster)) => ShadowTextureBinds::Table(sun_caster),
+                        None => ShadowTextureBinds::PerSlot {
+                            ports: pipeline_res,
+                            table: texture_table,
+                            mask_sun: true,
+                        },
+                    },
                     color_view: &color_view,
                     depth_view: &depth_view,
                     scissor: part.envelope.scissor,

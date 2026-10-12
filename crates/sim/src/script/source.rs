@@ -34,7 +34,7 @@ impl SourceResolver for FileSources {
         self.read_bytes(module).map(|bytes| decode_source(&bytes))
     }
     fn read_bytes(&self, module: &str) -> Result<Vec<u8>, String> {
-        std::fs::read(self.0.join(format!("{module}.gsc"))).map_err(|e| e.to_string())
+        vfs::fs::read(self.0.join(format!("{module}.gsc"))).map_err(|e| e.to_string())
     }
 }
 

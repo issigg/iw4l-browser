@@ -24,6 +24,8 @@ pub struct AimTarget {
     pub mins: [f32; 3],
     pub maxs: [f32; 3],
     pub aim: [f32; 3],
+    /// Mid-chest, used by the mouse assist.
+    pub chest: [f32; 3],
     pub velocity: [f32; 3],
 }
 
@@ -38,6 +40,10 @@ pub struct AimView {
     pub fov_scale: f32,
     pub ranges: weapon_iw4::AimAssistRanges,
     pub dt: f32,
+    /// Fire button held.
+    pub firing: bool,
+    /// Weapon fire interval; long means one shot at a time (snipers), short means spraying.
+    pub fire_time_ms: i32,
 }
 
 struct OnScreen {
@@ -259,4 +265,227 @@ pub fn pad_look_frame(
     }
     input.pad_was_ads = ads;
     input.pad_look_delta = delta;
+}
+
+const MOUSE_SLOW_LOW: [f32; 2] = [0.65, 0.5];
+const MOUSE_SLOW_HIGH: [f32; 2] = [0.45, 0.3];
+/// Level 3 ("unfair"): the mouse nearly sticks to the target.
+const MOUSE_SLOW_INSANE: [f32; 2] = [0.45, 0.3];
+const MOUSE_REGION: [f32; 2] = [130.0, 130.0];
+const MOUSE_PULL_REGION: [f32; 2] = [100.0, 100.0];
+/// Fraction of the mouse's own motion added toward the target.
+const MOUSE_PULL_FRACTION: f32 = 0.35;
+/// Never close more than this share of the remaining error in one frame.
+const MOUSE_PULL_ERROR_SHARE: f32 = 0.35;
+/// Hard cap, degrees per frame.
+const MOUSE_PULL_MAX: f32 = 1.0;
+/// Below this alignment (cosine) between motion and target direction there is no pull.
+const MOUSE_PULL_MIN_ALIGN: f32 = 0.3;
+
+/// Mouse delta scale while a hostile is inside the assist region.
+pub fn mouse_slowdown(mode: u8, ads_lerp: f32) -> f32 {
+    let pair = match mode {
+        0 => return 1.0,
+        1 => MOUSE_SLOW_LOW,
+        2 => MOUSE_SLOW_HIGH,
+        _ => MOUSE_SLOW_INSANE,
+    };
+    lerp(pair[0], pair[1], ads_lerp.clamp(0.0, 1.0))
+}
+
+/// Pull magnitude in degrees for this frame. `motion` is the angular size of the
+/// player's own mouse movement, `error` the angle to the target and `align` the
+/// cosine between the movement and the direction to the target.
+pub fn mouse_pull_amount(motion: f32, error: f32, align: f32) -> f32 {
+    if motion <= 0.0 || error <= 0.0 || align < MOUSE_PULL_MIN_ALIGN {
+        return 0.0;
+    }
+    (motion * MOUSE_PULL_FRACTION * align)
+        .min(error * MOUSE_PULL_ERROR_SHARE)
+        .min(MOUSE_PULL_MAX)
+}
+
+/// Mouse counterpart of `pad_look_frame`: scales the raw mouse deltas down near
+/// a target and, at level 2, adds a small pull while moving toward it.
+pub fn mouse_look_frame(input: &mut ClientActionInput, view: &AimView, targets: &[AimTarget]) {
+    input.mouse_pull = [0.0; 2];
+    let mode = input.mouse_aim_assist;
+    if mode >= 3 {
+        mouse_look_unfair(input, view, targets);
+        return;
+    }
+    if mode == 0 || (input.mouse_x == 0.0 && input.mouse_y == 0.0) {
+        return;
+    }
+    let ads_lerp = view.ads_lerp.clamp(0.0, 1.0);
+    let screen = project(view, targets);
+    let hip = if view.ranges.hip > 0.0 {
+        view.ranges.hip
+    } else {
+        FALLBACK_RANGE
+    };
+    let ads = if view.ranges.ads > 0.0 {
+        view.ranges.ads
+    } else {
+        hip
+    };
+    let range = lerp(hip, ads, ads_lerp);
+    if best(&screen, range, MOUSE_REGION, 1.0).is_none() {
+        return;
+    }
+    let slow = mouse_slowdown(mode, ads_lerp);
+    // Angular intent before the slowdown: pitch follows +y, yaw follows -x.
+    let sens = (input.sensitivity * view.fov_scale).max(0.0);
+    let intent = [
+        input.mouse_y * input.m_pitch * sens,
+        -input.mouse_x * input.m_yaw * sens,
+    ];
+    input.mouse_x *= slow;
+    input.mouse_y *= slow;
+    if mode < 2 {
+        return;
+    }
+    let Some(target) = best(&screen, range, MOUSE_PULL_REGION, 1.0) else {
+        return;
+    };
+    let goal = angles_to(view.eye, target.target.aim);
+    let err = [
+        angle_delta(goal[0], view.angles[0]),
+        angle_delta(goal[1], view.angles[1]),
+    ];
+    let error = err[0].hypot(err[1]);
+    let motion = intent[0].hypot(intent[1]) * slow;
+    if error <= 1e-4 || motion <= 1e-6 {
+        return;
+    }
+    let align = (intent[0] * err[0] + intent[1] * err[1]) / (intent[0].hypot(intent[1]) * error);
+    let pull = mouse_pull_amount(motion, error, align);
+    input.mouse_pull = [err[0] / error * pull, err[1] / error * pull];
+}
+
+/// Angular error (degrees) inside which the unfair mode grabs a target.
+const UNFAIR_CONE: f32 = 30.0;
+/// Inside this error the mouse is slowed down.
+/// Half the width of a player body, units; sets how big the on-target zone is at a distance.
+const UNFAIR_BODY_RADIUS: f32 = 18.0;
+
+/// Shots closer together than this count as spraying (sustained boost while held); slower
+/// weapons get a short boost right after each shot.
+const SPRAY_MAX_FIRE_TIME_MS: i32 = 250;
+/// How long the one-shot boost lasts, seconds.
+const SHOT_BOOST_SECONDS: f32 = 0.3;
+
+/// Smooth 0..1 ramp.
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// A mouse move this big (degrees per frame) away from the target breaks a shot lock.
+const UNFAIR_BREAKAWAY: f32 = 2.5;
+
+/// Level 3. Normally it only slows the mouse a little near an enemy (no pull, so moving away
+/// is easy). When you shoot it relocks onto the enemy's chest and cancels most of your own
+/// mouse movement: a short lock per shot for slow weapons, held while spraying for fast ones.
+fn mouse_look_unfair(input: &mut ClientActionInput, view: &AimView, targets: &[AimTarget]) {
+    let attack_was = std::mem::replace(&mut input.mouse_attack_prev, view.firing);
+    let spray = view.fire_time_ms < SPRAY_MAX_FIRE_TIME_MS;
+    if view.firing && (spray || !attack_was) {
+        input.mouse_shot_boost = 1.0;
+    } else if !(view.firing && spray) {
+        input.mouse_shot_boost = (input.mouse_shot_boost - view.dt / SHOT_BOOST_SECONDS).max(0.0);
+    }
+    let lock = input.mouse_shot_boost;
+    let moving = input.mouse_x != 0.0 || input.mouse_y != 0.0;
+    if !moving && lock <= 0.0 {
+        return;
+    }
+    let mut best: Option<([f32; 2], f32, f32)> = None;
+    for target in targets {
+        let d = [
+            target.chest[0] - view.eye[0],
+            target.chest[1] - view.eye[1],
+            target.chest[2] - view.eye[2],
+        ];
+        let dist = dot(d, d).sqrt();
+        if dist > 4000.0 {
+            continue;
+        }
+        let goal = angles_to(view.eye, target.chest);
+        let err = [
+            angle_delta(goal[0], view.angles[0]),
+            angle_delta(goal[1], view.angles[1]),
+        ];
+        let error = err[0].hypot(err[1]);
+        if error <= UNFAIR_CONE && best.is_none_or(|(_, e, _)| error < e) {
+            best = Some((err, error, dist));
+        }
+    }
+    let Some((err, error, dist)) = best else {
+        return;
+    };
+    let ads_lerp = view.ads_lerp.clamp(0.0, 1.0);
+    let reach = smooth((UNFAIR_CONE - error) / 8.0);
+    let sens = (input.sensitivity * view.fov_scale).max(0.0);
+    let intent = [
+        input.mouse_y * input.m_pitch * sens,
+        -input.mouse_x * input.m_yaw * sens,
+    ];
+    let intent_len = intent[0].hypot(intent[1]);
+    let align = if intent_len > 1e-6 && error > 1e-3 {
+        (intent[0] * err[0] + intent[1] * err[1]) / (intent_len * error)
+    } else {
+        0.0
+    };
+    if lock <= 0.0 {
+        // Not shooting: slow the mouse near the enemy, easing off when moving away.
+        // Only while the crosshair is on the enemy: the body's angular size at this distance.
+        let on_body = (UNFAIR_BODY_RADIUS / dist.max(1.0)).atan().to_degrees().clamp(1.5, 6.0);
+        if error <= on_body {
+            let hold = smooth(1.0 + align * 1.5);
+            let edge = smooth((on_body - error) / (on_body * 0.5));
+            let slow = lerp(1.0, mouse_slowdown(3, ads_lerp), hold * edge);
+            input.mouse_x *= slow;
+            input.mouse_y *= slow;
+        }
+        return;
+    }
+    // A hard flick away from the enemy breaks the lock.
+    if intent_len > UNFAIR_BREAKAWAY && align < -0.2 {
+        input.mouse_shot_boost = 0.0;
+        return;
+    }
+    // Cancel most of the player's own movement and close most of the remaining error.
+    let keep = 1.0 - 0.9 * lock * reach;
+    input.mouse_x *= keep;
+    input.mouse_y *= keep;
+    if error > 1e-3 {
+        let pull = (error * 0.6 * lock * reach).min(6.0);
+        input.mouse_pull = [err[0] / error * pull, err[1] / error * pull];
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+
+    #[test]
+    fn slowdown_scales() {
+        assert_eq!(mouse_slowdown(0, 1.0), 1.0);
+        assert_eq!(mouse_slowdown(1, 0.0), 0.65);
+        assert_eq!(mouse_slowdown(2, 0.0), 0.45);
+        assert!(mouse_slowdown(2, 1.0) < mouse_slowdown(2, 0.0));
+        assert!(mouse_slowdown(1, 1.0) > mouse_slowdown(2, 1.0));
+        assert!(mouse_slowdown(3, 0.0) <= mouse_slowdown(2, 0.0));
+    }
+
+    #[test]
+    fn pull_is_limited_and_directional() {
+        assert_eq!(mouse_pull_amount(0.0, 5.0, 1.0), 0.0);
+        assert_eq!(mouse_pull_amount(2.0, 5.0, -0.5), 0.0);
+        assert_eq!(mouse_pull_amount(2.0, 5.0, 0.1), 0.0);
+        assert!(mouse_pull_amount(100.0, 100.0, 1.0) <= MOUSE_PULL_MAX);
+        assert!(mouse_pull_amount(100.0, 0.5, 1.0) <= 0.5 * MOUSE_PULL_ERROR_SHARE + 1e-6);
+        assert!(mouse_pull_amount(1.0, 5.0, 1.0) > 0.0);
+    }
 }

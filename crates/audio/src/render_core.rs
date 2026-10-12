@@ -47,7 +47,7 @@ pub(crate) struct InstanceState {
     pub rejection: AtomicU8,
     pub cursor: AtomicU64,
     pub rendered_at: AtomicU64,
-    pub requested_at: std::time::Instant,
+    pub requested_at: web_time::Instant,
     pub first_device_us: AtomicU64,
     pub first_device_frame: AtomicU64,
     pub device_frames: AtomicU64,

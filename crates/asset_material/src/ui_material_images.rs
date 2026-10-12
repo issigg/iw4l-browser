@@ -88,9 +88,22 @@ impl UiImageBuild {
         ] {
             if let Some(main) = trees.main_for(namespace) {
                 match asset_transport::IwdIndex::open(main) {
-                    Ok(index) => self.archive_source(namespace, main.to_path_buf(), index),
-                    Err(error) if first_error.is_none() => first_error = Some(error),
-                    Err(_) => {}
+                    Ok(index) => {
+                        diag::info!(
+                            Zone,
+                            "ui images: {} archive {} ({} archives)",
+                            namespace.as_str(),
+                            main.display(),
+                            index.archive_count()
+                        );
+                        self.archive_source(namespace, main.to_path_buf(), index)
+                    }
+                    Err(error) => {
+                        diag::warn!(Zone, "ui images: {} archive {}: {error}", namespace.as_str(), main.display());
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-use super::decode::{DecodedMips, MipStorage, decode_iwi_mips};
+use super::decode::{DecodedMips, MipStorage, decode_iwi_mips_world};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MIP_CACHE_FORMAT: u32 = 2;
@@ -80,7 +80,7 @@ fn decode_cache(bytes: &[u8]) -> Option<DecodedMips> {
     DecodedMips::from_packed(width, height, storage, packed, sizes)
 }
 
-fn read_cached_mips(key: &str, io_at: std::time::Instant) -> Option<DecodedMips> {
+fn read_cached_mips(key: &str, io_at: web_time::Instant) -> Option<DecodedMips> {
     let hit = crate::cache_get("mips", key)?;
     MIP_IO_NS.fetch_add(io_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
     let mips = decode_cache(&hit)?;
@@ -99,19 +99,19 @@ pub(super) fn load_or_decode_mips(
     candidate: &asset_transport::IwdFile,
 ) -> Result<DecodedMips, String> {
     let key = mip_cache_key(candidate.crc32(), candidate.size(), candidate.entry());
-    let io_at = std::time::Instant::now();
+    let io_at = web_time::Instant::now();
     if let Some(mips) = read_cached_mips(&key, io_at) {
         return Ok(mips);
     }
 
     let _flight = crate::cache_flight("mips", &key);
-    if let Some(mips) = read_cached_mips(&key, std::time::Instant::now()) {
+    if let Some(mips) = read_cached_mips(&key, web_time::Instant::now()) {
         return Ok(mips);
     }
     let bytes = candidate.read()?;
-    let mips = decode_iwi_mips(&bytes)?;
+    let mips = decode_iwi_mips_world(&bytes)?;
     let blob = encode_cache(&mips);
-    let store_at = std::time::Instant::now();
+    let store_at = web_time::Instant::now();
     if let Err(error) = crate::cache_put("mips", &key, &blob) {
         diag::warn!(Zone, "mip cache store {key}: {error}");
     }

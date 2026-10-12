@@ -1,11 +1,114 @@
 use std::{fmt, sync::Arc};
 
 use master_protocol::MemberId;
+#[cfg(not(target_family = "wasm"))]
 use ring::{
     digest::{self, SHA256},
     rand::{SecureRandom, SystemRandom},
     signature::{self, Ed25519KeyPair, KeyPair},
 };
+// WASM-SPIKE: ring needs a wasm-capable clang; RustCrypto-backed stand-in with the same call shapes.
+#[cfg(target_family = "wasm")]
+use ring_shim::{
+    digest::{self, SHA256},
+    rand::{SecureRandom, SystemRandom},
+    signature::{self, Ed25519KeyPair, KeyPair},
+};
+#[cfg(target_family = "wasm")]
+mod ring_shim {
+    pub mod digest {
+        use sha2::Digest as _;
+        pub struct Algorithm;
+        pub const SHA256: Algorithm = Algorithm;
+        pub struct Output([u8; 32]);
+        impl AsRef<[u8]> for Output {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        pub struct Context(sha2::Sha256);
+        impl Context {
+            pub fn new(_: &Algorithm) -> Self {
+                Self(sha2::Sha256::new())
+            }
+            pub fn update(&mut self, data: &[u8]) {
+                self.0.update(data);
+            }
+            pub fn finish(self) -> Output {
+                Output(self.0.finalize().into())
+            }
+        }
+        pub fn digest(_: &Algorithm, data: &[u8]) -> Output {
+            let mut c = Context::new(&SHA256);
+            c.update(data);
+            c.finish()
+        }
+    }
+    pub mod rand {
+        pub struct Unspecified;
+        pub struct SystemRandom;
+        impl SystemRandom {
+            pub fn new() -> Self {
+                Self
+            }
+        }
+        pub trait SecureRandom {
+            fn fill(&self, dest: &mut [u8]) -> Result<(), Unspecified>;
+        }
+        impl SecureRandom for SystemRandom {
+            fn fill(&self, dest: &mut [u8]) -> Result<(), Unspecified> {
+                getrandom03::fill(dest).map_err(|_| Unspecified)
+            }
+        }
+    }
+    pub mod signature {
+        use ed25519_dalek::{Signer as _, Verifier as _};
+        pub struct Unspecified;
+        pub struct PublicKeyBytes([u8; 32]);
+        impl AsRef<[u8]> for PublicKeyBytes {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        pub struct Sig([u8; 64]);
+        impl AsRef<[u8]> for Sig {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        pub trait KeyPair {
+            fn public_key(&self) -> PublicKeyBytes;
+        }
+        pub struct Ed25519KeyPair(ed25519_dalek::SigningKey);
+        impl Ed25519KeyPair {
+            pub fn from_seed_unchecked(seed: &[u8]) -> Result<Self, Unspecified> {
+                let seed: [u8; 32] = seed.try_into().map_err(|_| Unspecified)?;
+                Ok(Self(ed25519_dalek::SigningKey::from_bytes(&seed)))
+            }
+            pub fn sign(&self, msg: &[u8]) -> Sig {
+                Sig(self.0.sign(msg).to_bytes())
+            }
+        }
+        impl KeyPair for Ed25519KeyPair {
+            fn public_key(&self) -> PublicKeyBytes {
+                PublicKeyBytes(self.0.verifying_key().to_bytes())
+            }
+        }
+        pub struct Alg;
+        pub const ED25519: Alg = Alg;
+        pub struct UnparsedPublicKey([u8; 32]);
+        impl UnparsedPublicKey {
+            pub fn new(_: &Alg, key: [u8; 32]) -> Self {
+                Self(key)
+            }
+            pub fn verify(&self, msg: &[u8], sig: &[u8]) -> Result<(), Unspecified> {
+                let vk = ed25519_dalek::VerifyingKey::from_bytes(&self.0).map_err(|_| Unspecified)?;
+                let sig = ed25519_dalek::Signature::from_slice(sig).map_err(|_| Unspecified)?;
+                vk.verify(msg, &sig).map_err(|_| Unspecified)
+            }
+        }
+    }
+}
 use sim::AccountId;
 
 use crate::ConnectionId;

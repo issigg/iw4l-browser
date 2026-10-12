@@ -81,6 +81,13 @@ pub fn fire_recoil_gun_range(frac: f32, hip: GunKickRange, ads: GunKickRange) ->
     }
 }
 
+static RECOIL_PERCENT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(100);
+
+/// Host game tweak: scales camera and gun recoil (100 = stock, 0 = none).
+pub fn set_recoil_percent(percent: u32) {
+    RECOIL_PERCENT.store(percent.min(100), core::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn weapon_fire_recoil(
     view: ViewKickRange,
     gun: GunKickRange,
@@ -92,6 +99,7 @@ pub fn weapon_fire_recoil(
     } else {
         1.0
     };
+    gain *= RECOIL_PERCENT.load(core::sync::atomic::Ordering::Relaxed) as f32 * 0.01;
     if ps.weap_flags & playerstate_iw4::weap_flags::RECOIL_SCALE != 0 {
         gain *= (ps.recoil_scale as f32).max(0.0) * 0.01;
     }

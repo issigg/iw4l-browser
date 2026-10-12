@@ -159,7 +159,7 @@ pub(crate) struct ClassStoreFile {
     path: Option<std::path::PathBuf>,
     loaded: bool,
     written: Option<String>,
-    retry_at: Option<std::time::Instant>,
+    retry_at: Option<web_time::Instant>,
 }
 
 fn clean_field(value: &str) -> String {
@@ -283,12 +283,12 @@ pub(crate) fn load_class_store(
     let path = identity.artifacts.join("profile").join("classes.txt");
     file.loaded = true;
     let generate = || {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let seed = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos() as u64);
         SessionClassStore::from_showcase(seed, registry)
     };
-    match std::fs::read_to_string(&path) {
+    match vfs::fs::read_to_string(&path) {
         Ok(text) => match decode_slots(&text) {
             Some(slots) => {
                 diag::info!(Ui, "classes: {} read from {}", slots.len(), path.display());
@@ -339,18 +339,18 @@ fn write_class_file(path: &std::path::Path, contents: &str) -> std::io::Result<(
     use std::io::Write;
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        vfs::fs::create_dir_all(parent)?;
     }
-    let pending = path.with_extension(format!("{}.tmp", std::process::id()));
+    let pending = path.with_extension(format!("{}.tmp", vfs::process_id()));
     let result = (|| {
-        let mut output = std::fs::File::create(&pending)?;
+        let mut output = vfs::fs::File::create(&pending)?;
         output.write_all(contents.as_bytes())?;
         output.sync_all()?;
         drop(output);
-        std::fs::rename(&pending, path)
+        vfs::fs::rename(&pending, path)
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&pending);
+        let _ = vfs::fs::remove_file(&pending);
     }
     result
 }
@@ -364,7 +364,7 @@ pub(crate) fn save_class_store(
         || store.slots.is_empty()
         || file
             .retry_at
-            .is_some_and(|at| std::time::Instant::now() < at)
+            .is_some_and(|at| web_time::Instant::now() < at)
     {
         return;
     }
@@ -399,7 +399,7 @@ pub(crate) fn save_class_store(
         }
         Err(error) => {
             diag::warn!(Ui, "classes: cannot write {}: {error}", path.display());
-            file.retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+            file.retry_at = Some(web_time::Instant::now() + std::time::Duration::from_secs(5));
         }
     }
 }

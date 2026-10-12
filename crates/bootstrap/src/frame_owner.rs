@@ -1,6 +1,6 @@
 pub fn prefer_performance_cores() -> Option<PerformanceCorePlan> {
     let plan = performance_core_plan(
-        &std::fs::read_to_string("/sys/devices/cpu_core/cpus").ok()?,
+        &vfs::fs::read_to_string("/sys/devices/cpu_core/cpus").ok()?,
         &current_affinity()?,
     )?;
     set_affinity(&plan.chosen)?;

@@ -644,7 +644,7 @@ impl ServerPacket {
                         return;
                     }
                 };
-                let compressed = match zstd::bulk::compress(payload, 1) {
+                let compressed = match zstd_compress_l1(payload) {
                     Ok(bytes) if bytes.len() + 4 < payload.len() => Some(bytes),
                     Ok(_) => None,
                     Err(error) => {
@@ -858,4 +858,14 @@ impl core::fmt::Display for IdentityError {
             Self::UnknownConnection => write!(f, "connection id is not registered"),
         }
     }
+}
+
+// WASM-SPIKE: no zstd on wasm yet; uncompressed snapshots are a valid wire form (`TAG_SERVER_SNAPSHOT`).
+#[cfg(not(target_family = "wasm"))]
+fn zstd_compress_l1(payload: &[u8]) -> std::io::Result<Vec<u8>> {
+    zstd::bulk::compress(payload, 1)
+}
+#[cfg(target_family = "wasm")]
+fn zstd_compress_l1(_payload: &[u8]) -> std::io::Result<Vec<u8>> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }

@@ -27,6 +27,8 @@ pub mod editor;
 mod feature_dispatch;
 mod frontend;
 mod game_folders;
+mod tweaks;
+mod web_welcome;
 mod gamepad;
 pub mod input;
 mod local_account;

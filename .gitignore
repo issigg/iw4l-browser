@@ -18,3 +18,13 @@ iw4l.community.*.tmp
 .direnv/
 result
 result-*
+
+# Built wasm output and macOS cruft
+/crates/web/www/pkg/
+.DS_Store
+
+# Build output of the archived threads experiment (branch web-threads) and manifests the dev server
+# records per map on a first visit (they depend on the player's own game files).
+/target-threads/
+/crates/web/www/pkg-threads/
+/crates/web/www/prefetch/

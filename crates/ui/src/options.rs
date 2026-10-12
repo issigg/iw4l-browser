@@ -46,9 +46,13 @@ pub(crate) fn apply_window_settings(
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    window
-        .resolution
-        .set_physical_resolution(settings.resolution.width, settings.resolution.height);
+    // WASM-SPIKE: on the web the canvas follows the browser window (fit_canvas_to_parent), so the
+    // saved display resolution must not pin it to a fixed pixel size.
+    if !cfg!(target_family = "wasm") {
+        window
+            .resolution
+            .set_physical_resolution(settings.resolution.width, settings.resolution.height);
+    }
     window.mode = if settings.fullscreen {
         bevy::window::WindowMode::BorderlessFullscreen(MonitorSelection::Current)
     } else {

@@ -2,6 +2,7 @@ mod camouflage;
 mod common_compile;
 mod destructible;
 
+use vfs::VfsExt as _;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -367,7 +368,7 @@ fn sound_zone(path: &Path, report: &mut Vec<String>) -> Option<fastfile_t6::Zone
 
 fn foley_zone(common: &Path, report: &mut Vec<String>) -> Option<fastfile_t6::ZoneLoad> {
     let dir = common.parent()?;
-    let smallest = std::fs::read_dir(dir)
+    let smallest = vfs::fs::read_dir(dir)
         .ok()?
         .flatten()
         .filter(|entry| {
@@ -467,7 +468,7 @@ fn open_ipaks(zone: &Path, report: &mut Vec<String>) -> Vec<asset_transport::IPa
     let Some(dir) = zone.parent() else {
         return Vec::new();
     };
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = vfs::fs::read_dir(dir) else {
         report.push(format!("t6 content: cannot read {}", dir.display()));
         return Vec::new();
     };
@@ -1877,7 +1878,7 @@ fn map_teams(
             let localized = zone
                 .join("english")
                 .join(format!("en_faction_{faction}_mp.ff"));
-            if localized.exists() {
+            if localized.vexists() {
                 let image = asset_transport::open_t6_zone(&localized)
                     .map_err(|e| format!("T6 localized faction: {e:?}"))?;
                 let (load, walk) = fastfile_t6::load_zone(schema()?, &image.bytes, |_, _| true);

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::clip_store::ClipKey;
 
@@ -97,10 +97,16 @@ impl MediaJobQueue {
             if !urgent_only && let Some(job) = state.prewarm.pop_front() {
                 return Some(job);
             }
-            state = self
+            // No blocking on wasm: the single thread pumps jobs per frame.
+            #[cfg(target_family = "wasm")]
+            return None;
+            #[cfg(not(target_family = "wasm"))]
+            {
+                state = self
                 .wake
                 .wait(state)
                 .unwrap_or_else(|poison| poison.into_inner());
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use vfs::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -212,7 +212,7 @@ fn acceptance_prepare(
         cam.freeze_fly = true;
         cam.enabled = false;
     }
-    let _ = std::fs::create_dir_all(&run.artifact_dir);
+    let _ = vfs::fs::create_dir_all(&run.artifact_dir);
     diag::info!(
         World,
         "acceptance: world ready on {}; warm {} then sample {}",
@@ -294,7 +294,7 @@ fn acceptance_capture_and_exit(
     if state.phase == Phase::Failed {
         if let Some(reason) = &state.fail_reason {
             let path = run.artifact_dir.join("FAILURE.txt");
-            let _ = std::fs::write(&path, format!("{reason}\n"));
+            let _ = vfs::fs::write(&path, format!("{reason}\n"));
         }
         exit.write(AppExit::from_code(2));
         state.phase = Phase::Done;

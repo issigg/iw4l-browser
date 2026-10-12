@@ -50,6 +50,42 @@ pub enum WgpuBindingKind {
     SamplerArray {
         count: u32,
     },
+
+    /// One texture per sampler register (WebGPU has no binding arrays).
+    Texture {
+        dimension: SamplerTextureDimension,
+        filterable: bool,
+    },
+
+    Sampler {
+        filtering: bool,
+    },
+}
+
+/// Per-register entries for one pass: texture at `register`, sampler at `PER_SLOT_SAMPLER_BASE + register`.
+pub fn per_slot_bind_entries(samplers: &[render_material::SamplerBinding]) -> Vec<WgpuBindLayoutEntry> {
+    let mut entries = Vec::with_capacity(samplers.len() * 2);
+    for slot in samplers {
+        let register = slot.register;
+        entries.push(WgpuBindLayoutEntry {
+            group: u8::try_from(d3d9_sm3::TEXTURE_TABLE_GROUP).expect("group 1"),
+            binding: register,
+            visibility: WgpuShaderVisibility::Fragment,
+            kind: WgpuBindingKind::Texture {
+                dimension: slot.dimension,
+                filterable: true,
+            },
+            register_packed: None,
+        });
+        entries.push(WgpuBindLayoutEntry {
+            group: u8::try_from(d3d9_sm3::TEXTURE_TABLE_GROUP).expect("group 1"),
+            binding: u16::try_from(d3d9_sm3::PER_SLOT_SAMPLER_BASE).expect("base fits") + register,
+            visibility: WgpuShaderVisibility::Fragment,
+            kind: WgpuBindingKind::Sampler { filtering: true },
+            register_packed: None,
+        });
+    }
+    entries
 }
 
 pub const TEXTURE_TABLE_2D_CAPACITY: u32 = 8192;
@@ -196,7 +232,11 @@ pub fn derive_wgpu_pass_layout(
         register_packed: None,
     });
 
-    bind_entries.extend(texture_table_bind_entries());
+    if d3d9_sm3::PER_SLOT_TEXTURES {
+        bind_entries.extend(per_slot_bind_entries(&abi.samplers));
+    } else {
+        bind_entries.extend(texture_table_bind_entries());
+    }
 
     Ok(WgpuPassLayout {
         vertex_buffers,

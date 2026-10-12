@@ -1,4 +1,5 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
+use vfs::fs;
 
 use bevy::{
     input::{
@@ -279,7 +280,8 @@ pub(crate) fn settings_path(artifacts: &std::path::Path) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("IW4L_SETTINGS_PATH") {
         return Some(PathBuf::from(path));
     }
-    if cfg!(windows) {
+    // WASM-SPIKE: no HOME on the web; keep settings beside the other artifacts (persisted by vfs).
+    if cfg!(windows) || cfg!(target_family = "wasm") {
         return Some(artifacts.join("settings.cfg"));
     }
     std::env::var_os("XDG_CONFIG_HOME")
@@ -342,6 +344,7 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
         format!("pad_curve={}", settings.pad_curve),
         format!("pad_acceleration={}", settings.pad_acceleration),
         format!("pad_aim_assist={}", settings.pad_aim_assist),
+        format!("mouse_aim_assist={}", settings.mouse_aim_assist),
         format!("pad_prompts={}", settings.pad_prompts),
         format!("pad_vibration={}", settings.pad_vibration),
         format!("pad_deadzone_left={:.2}", settings.pad_deadzone_left),
@@ -445,6 +448,7 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             "pad_curve" => parse_into(value, &mut settings.pad_curve),
             "pad_acceleration" => parse_into(value, &mut settings.pad_acceleration),
             "pad_aim_assist" => parse_into(value, &mut settings.pad_aim_assist),
+            "mouse_aim_assist" => parse_into(value, &mut settings.mouse_aim_assist),
             "pad_prompts" => parse_into(value, &mut settings.pad_prompts),
             "pad_vibration" => parse_into(value, &mut settings.pad_vibration),
             "pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
@@ -558,6 +562,7 @@ pub(crate) fn native_menu_settings(
             "ui_pad_curve" => parse_into(value, &mut settings.pad_curve),
             "ui_pad_acceleration" => settings.pad_acceleration = value == "1",
             "ui_pad_aim_assist" => parse_into(value, &mut settings.pad_aim_assist),
+            "ui_mouse_aim_assist" => parse_into(value, &mut settings.mouse_aim_assist),
             "ui_pad_prompts" => parse_into(value, &mut settings.pad_prompts),
             "ui_pad_test_rumble" => {
                 if value == "1" {
@@ -615,6 +620,7 @@ pub(crate) fn native_menu_settings(
         if settings.pad_acceleration { "1" } else { "0" },
     );
     dvars.set("ui_pad_aim_assist", settings.pad_aim_assist.to_string());
+    dvars.set("ui_mouse_aim_assist", settings.mouse_aim_assist.to_string());
     dvars.set("ui_pad_prompts", settings.pad_prompts.to_string());
     dvars.set(
         "ui_pad_vibration",

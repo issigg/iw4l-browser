@@ -3,7 +3,7 @@
 //! report turns those stamps into the waterfall.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use web_time::Instant;
 
 use asset_transport::{LoadLaneTiming, LoadProgress};
 use assets::{LoadingScreen, MatchLoadBusy, MatchLoadRequest};
@@ -92,7 +92,7 @@ impl Milestones {
     }
 
     pub(crate) fn screenshot_bytes(&self) -> Option<u64> {
-        std::fs::metadata(&self.screenshot)
+        vfs::fs::metadata(&self.screenshot)
             .ok()
             .map(|meta| meta.len())
             .filter(|len| *len > 0)

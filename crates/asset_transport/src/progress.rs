@@ -7,7 +7,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration};
+use web_time::{Instant};
 
 static RSS_PEAK: AtomicU64 = AtomicU64::new(0);
 
@@ -288,7 +289,7 @@ pub fn peak_resident_bytes() -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn proc_status_bytes(key: &str) -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let status = vfs::fs::read_to_string("/proc/self/status").ok()?;
     let kib = status.lines().find_map(|line| {
         let rest = line.strip_prefix(key)?;
         rest.split_whitespace().next()?.parse::<u64>().ok()

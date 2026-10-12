@@ -253,7 +253,7 @@ pub fn spawn_pending_fpv(
     {
         return;
     }
-    let instance_started = std::time::Instant::now();
+    let instance_started = web_time::Instant::now();
     cursor.0.forget_weap_anim();
     for entity in &existing_fpv {
         commands.entity(entity).try_despawn();
@@ -1218,6 +1218,10 @@ pub fn apply_fpv_placement(
         gun_yaw,
         xhair_x: xhair[0],
         xhair_y: xhair[1],
+        view_offset: [
+            math_iw4::angle_subtract(kick.refdef_view_angles[0], ps.viewangles[0]),
+            math_iw4::angle_subtract(kick.refdef_view_angles[1], ps.viewangles[1]),
+        ],
         from_composed_axis: from_axis,
     };
     let placed = iw_view_placement_to_bevy_camera_local(origin, contrib.angles);

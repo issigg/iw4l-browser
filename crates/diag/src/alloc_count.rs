@@ -94,17 +94,24 @@ pub fn counting_enabled() -> bool {
 
 fn env_key_present(key_nul: &[u8]) -> bool {
     debug_assert_eq!(key_nul.last().copied(), Some(0));
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = key_nul; // WASM-SPIKE: no libc getenv; always count so memory use is visible
+        return true;
+    }
+    #[cfg(not(target_family = "wasm"))]
     !unsafe { getenv(key_nul.as_ptr().cast()) }.is_null()
 }
 
 unsafe extern "C" {
+    #[cfg(not(target_family = "wasm"))]
     fn getenv(name: *const core::ffi::c_char) -> *mut core::ffi::c_char;
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn malloc_trim(pad: usize) -> core::ffi::c_int;
 }
 
 pub fn release_freed_heap() -> std::time::Duration {
-    let at = std::time::Instant::now();
+    let at = web_time::Instant::now();
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         unsafe { malloc_trim(0) };
@@ -183,4 +190,10 @@ pub fn process_allocation_slots_used() -> usize {
 
 pub fn process_allocation_saturated() -> u64 {
     SATURATED.load(Ordering::Relaxed)
+}
+
+/// Net bytes this thread has allocated so far (allocated minus freed; may be negative).
+pub fn thread_net_bytes() -> i64 {
+    let s = slot();
+    s.alloc_bytes.load(Ordering::Relaxed) as i64 - s.dealloc_bytes.load(Ordering::Relaxed) as i64
 }

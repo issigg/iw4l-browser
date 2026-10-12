@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use web_time::Instant;
 
 use asset_audio::SoundCatalog;
 use asset_core::AssetNamespace;
@@ -276,6 +276,70 @@ struct MediaServiceInner {
     retirement: Sender<ClipWorkers>,
     clip_cache: Option<PreparedClipCache>,
     common_profile_id: u64,
+    /// wasm has no worker threads: jobs run inline from `pump_media`.
+    #[cfg(target_family = "wasm")]
+    iwd: Option<Arc<NamespaceSoundIwd>>,
+}
+
+#[cfg(target_family = "wasm")]
+static INLINE_SERVICES: Mutex<Vec<std::sync::Weak<MediaServiceInner>>> = Mutex::new(Vec::new());
+
+/// Runs queued clip-preparation jobs on the calling (main) thread, at least
+/// one and until `budget` is spent. Called once per frame on wasm.
+#[cfg(target_family = "wasm")]
+pub(crate) fn pump_media(budget: std::time::Duration) {
+    let services: Vec<Arc<MediaServiceInner>> = {
+        let mut registry = INLINE_SERVICES
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        registry.retain(|weak| weak.strong_count() != 0);
+        registry.iter().filter_map(std::sync::Weak::upgrade).collect()
+    };
+    let started = Instant::now();
+    loop {
+        let mut ran = false;
+        for service in &services {
+            if let Some(job) = service.queue.pop(false) {
+                service.run_inline(job);
+                ran = true;
+                if started.elapsed() >= budget {
+                    return;
+                }
+            }
+        }
+        if !ran {
+            return;
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl MediaServiceInner {
+    fn run_inline(&self, job: ClipJob) {
+        QUEUE_WAIT_NS.fetch_add(job.queued_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let iwd = self.iwd.as_deref();
+        let prepare_at = Instant::now();
+        let (path, mut result) = prepare_clip_now(&self.bank, iwd, &job.key);
+        note_prepared(path, prepare_at, result.as_ref());
+        if matches!(result, Err(ClipError::InvalidPcm(crate::media::PcmError::MemoryLimit)))
+            && evict_idle_streamed(&self.requests, &self.outcomes) != 0
+        {
+            let retry_at = Instant::now();
+            let (path, retry) = prepare_clip_now(&self.bank, iwd, &job.key);
+            note_prepared(path, retry_at, retry.as_ref());
+            result = retry;
+        }
+        if let Some(cache) = &self.clip_cache
+            && let Ok(pcm) = &result
+            && let Some((key, common)) = resident_clip_key(&self.bank, &job.key)
+        {
+            cache.remember(self.common_profile_id, key, common, pcm.clone());
+        }
+        self.outcomes
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(job.key, (result, USE_TICK.fetch_add(1, Ordering::Relaxed)));
+    }
 }
 
 impl Drop for MediaServiceInner {
@@ -390,6 +454,11 @@ impl MediaService {
             cache.use_bank(&bank);
         }
         let (retirement, retired_workers) = channel::<ClipWorkers>();
+        // wasm: no threads. The receiver is dropped, so a retired service
+        // frees its (empty) worker set inline.
+        #[cfg(target_family = "wasm")]
+        drop(retired_workers);
+        #[cfg(not(target_family = "wasm"))]
         if let Err(error) = std::thread::Builder::new()
             .name("audio-media-retire".into())
             .spawn(move || {
@@ -403,15 +472,21 @@ impl MediaService {
                 "audio: media retirement thread not started ({error})"
             );
         }
+        #[cfg(not(target_family = "wasm"))]
         let workers = std::thread::available_parallelism()
             .map(|n| n.get().saturating_sub(2).clamp(2, 4))
             .unwrap_or(2);
+        #[cfg(target_family = "wasm")]
+        let workers = 0;
         let queue = Arc::new(MediaJobQueue::new());
         let outcomes = Arc::new(Mutex::new(Outcomes::new()));
         let requests = Arc::new(Mutex::new(MediaRequests::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut handles = Vec::with_capacity(workers);
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut urgent_started = false;
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut general_started = false;
         for slot in 0..workers {
             let queue_worker = Arc::clone(&queue);
@@ -479,12 +554,15 @@ impl MediaService {
                 Err(e) => diag::warn!(Audio, "audio: clip prep worker {slot} not started ({e})"),
             }
         }
+        #[cfg(not(target_family = "wasm"))]
         if !urgent_started || !general_started {
             stop.store(true, Ordering::Release);
             queue.close();
         }
+        #[cfg(target_family = "wasm")]
+        let _ = (urgent_started, general_started, &stop);
         WORKERS.fetch_add(handles.len() as u64, Ordering::Relaxed);
-        Self(Arc::new(MediaServiceInner {
+        let inner = Arc::new(MediaServiceInner {
             bank,
             queue: Arc::clone(&queue),
             requests,
@@ -497,7 +575,15 @@ impl MediaService {
             retirement,
             clip_cache,
             common_profile_id,
-        }))
+            #[cfg(target_family = "wasm")]
+            iwd,
+        });
+        #[cfg(target_family = "wasm")]
+        INLINE_SERVICES
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(Arc::downgrade(&inner));
+        Self(inner)
     }
 
     pub(crate) fn same_owner(&self, other: &Self) -> bool {

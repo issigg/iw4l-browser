@@ -41,4 +41,4 @@ pub use options::{BindingView, PresentModeOverride};
 pub use plugin::UiPlugin;
 pub use screen::{layers_for_screen, sync_ui_layers};
 
-pub use menu::install_frontend_menus;
+pub use menu::{MAX_RULE_ENEMY_BOTS, MAX_RULE_FRIENDLY_BOTS, install_frontend_menus};

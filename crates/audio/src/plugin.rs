@@ -14,5 +14,13 @@ impl Plugin for AudioPlugin {
         crate::rumble::register(app);
         crate::script_music::register(app);
         crate::script_mix::register(app);
+        // wasm has no control thread: one pass per frame on the main thread.
+        #[cfg(target_family = "wasm")]
+        app.add_systems(PostUpdate, wasm_control_system);
     }
+}
+
+#[cfg(target_family = "wasm")]
+fn wasm_control_system() {
+    crate::runtime::wasm_control_pass();
 }

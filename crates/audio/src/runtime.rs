@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
+use web_time::{Instant};
 
 use bevy::prelude::Resource;
 
@@ -101,6 +102,13 @@ impl Default for AudioRuntime {
 
 impl AudioRuntime {
     pub fn new(device_enabled: bool) -> Self {
+        // wasm has no device thread and no output device: the web transport
+        // behaves like the null transport and only drops output until audible.
+        #[cfg(target_family = "wasm")]
+        let device_enabled = {
+            let _ = device_enabled;
+            false
+        };
         let shared = Arc::new(RenderShared::new());
         shared
             .device_required
@@ -122,6 +130,27 @@ impl AudioRuntime {
         let control_rejections = rejections.clone();
         let cue_budget = crate::pending::PendingBudget::default();
         let control_budget = cue_budget.clone();
+        #[cfg(target_family = "wasm")]
+        let worker: Option<JoinHandle<()>> = {
+            WASM_CONTROL.with(|slot| {
+                *slot.borrow_mut() = Some(ControlState::new(
+                    thread_shared,
+                    thread_shutdown,
+                    cue_rx,
+                    device_enabled,
+                    control_sources,
+                    control_listener,
+                    control_event_context,
+                    control_fire_verdicts,
+                    control_ids,
+                    control_rejections,
+                    control_budget,
+                ));
+            });
+            crate::web_audio::init();
+            None
+        };
+        #[cfg(not(target_family = "wasm"))]
         let worker = std::thread::Builder::new()
             .name("audio-control".into())
             .spawn(move || {
@@ -140,6 +169,8 @@ impl AudioRuntime {
                 )
             })
             .expect("cannot start audio control thread");
+        #[cfg(not(target_family = "wasm"))]
+        let worker = Some(worker);
         Self {
             shared,
             cue_tx,
@@ -154,7 +185,7 @@ impl AudioRuntime {
             source_publisher: Mutex::new(SourcePublisher::new()),
             rejections,
             shutdown,
-            worker: Some(worker),
+            worker,
         }
     }
 
@@ -420,6 +451,64 @@ impl Drop for AudioRuntime {
     }
 }
 
+struct ControlState {
+    shared: Arc<RenderShared>,
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    shutdown: Arc<AtomicBool>,
+    cue_rx: Receiver<CueRequest>,
+    device_enabled: bool,
+    sources: Arc<SourceInbox>,
+    listener: Arc<ListenerState>,
+    event_context: Arc<crate::event::EventContextState>,
+    fire_verdicts: Arc<Mutex<net::FireVerdictState>>,
+    next_id: Arc<AtomicU64>,
+    rejections: Arc<[AtomicU64; 7]>,
+    cue_budget: crate::pending::PendingBudget,
+    diag_anchor: Instant,
+    diag_last: Instant,
+    diag_max_pass: Duration,
+    diag_previous_pass: Instant,
+    diag_max_gap: Duration,
+    resolver: CueResolver,
+    events: crate::event::EventJournal,
+    pending_cues: VecDeque<CueWork>,
+    device: Option<JoinHandle<()>>,
+    device_was_active: bool,
+    null_anchor: Instant,
+    null_frame: u64,
+    instances: Vec<LogicalInstance>,
+    next_voice: u64,
+    desired: SourceScene,
+    present_sources: HashSet<(SourceKey, u64)>,
+    source_cues: HashMap<(SourceKey, u64), Arc<crate::cue::CueState>>,
+}
+
+#[cfg(target_family = "wasm")]
+thread_local! {
+    static WASM_CONTROL: std::cell::RefCell<Option<ControlState>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// wasm: one control pass per frame on the main thread (no control thread).
+#[cfg(target_family = "wasm")]
+pub(crate) fn wasm_control_pass() {
+    crate::clip_store::pump_media(Duration::from_micros(1500));
+    WASM_CONTROL.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        if state.shutdown.load(Ordering::Acquire) {
+            if let Some(state) = slot.take() {
+                state.finish();
+            }
+        } else {
+            state.pass();
+        }
+    });
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn control(
     shared: Arc<RenderShared>,
     shutdown: Arc<AtomicBool>,
@@ -435,45 +524,136 @@ fn control(
 ) {
     assets::session_load::use_process_cpus();
     crate::diagnostics::thread("audio-control");
-    let diag_anchor = Instant::now();
-    let mut diag_last = Instant::now();
-    let mut diag_max_pass = Duration::ZERO;
-    let mut diag_previous_pass = Instant::now();
-    let mut diag_max_gap = Duration::ZERO;
-    let mut resolver = CueResolver::new();
-    let mut events = crate::event::EventJournal::new();
-    let mut pending_cues = VecDeque::<CueWork>::with_capacity(LOGICAL_INSTANCES);
-    let device = device_enabled.then(|| {
-        let shared = shared.clone();
-        let shutdown = shutdown.clone();
-        std::thread::Builder::new()
-            .name("audio-device".into())
-            .spawn(move || crate::device::supervise(shared, shutdown))
-            .expect("cannot start audio device thread")
-    });
-    let mut device_was_active = false;
-    let mut null_anchor = Instant::now();
-    let mut null_frame = 0;
-    let mut instances: Vec<LogicalInstance> = Vec::with_capacity(LOGICAL_INSTANCES);
-    let mut next_voice = 1;
-    let mut desired = SourceScene {
-        revision: 0,
-        sources: Vec::new(),
-        asserted: Vec::new(),
-    };
-    let mut present_sources = HashSet::with_capacity(LOGICAL_INSTANCES);
-    let mut source_cues = HashMap::<(SourceKey, u64), Arc<crate::cue::CueState>>::with_capacity(
-        crate::sources::SOURCE_HISTORY,
+    let mut state = ControlState::new(
+        shared,
+        shutdown.clone(),
+        cue_rx,
+        device_enabled,
+        sources,
+        listener,
+        event_context,
+        fire_verdicts,
+        next_id,
+        rejections,
+        cue_budget,
     );
-    let mut silence = [[0.0; 2]; QUANTUM];
     while !shutdown.load(Ordering::Acquire) {
+        state.pass();
+        std::thread::park_timeout(Duration::from_millis(2));
+    }
+    state.finish();
+}
+
+impl ControlState {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        shared: Arc<RenderShared>,
+        shutdown: Arc<AtomicBool>,
+        cue_rx: Receiver<CueRequest>,
+        device_enabled: bool,
+        sources: Arc<SourceInbox>,
+        listener: Arc<ListenerState>,
+        event_context: Arc<crate::event::EventContextState>,
+        fire_verdicts: Arc<Mutex<net::FireVerdictState>>,
+        next_id: Arc<AtomicU64>,
+        rejections: Arc<[AtomicU64; 7]>,
+        cue_budget: crate::pending::PendingBudget,
+    ) -> Self {
+        #[cfg(not(target_family = "wasm"))]
+        let device = device_enabled.then(|| {
+            let shared = shared.clone();
+            let shutdown = shutdown.clone();
+            std::thread::Builder::new()
+                .name("audio-device".into())
+                .spawn(move || crate::device::supervise(shared, shutdown))
+                .expect("cannot start audio device thread")
+        });
+        // wasm: no device thread; the web transport drives `render_for`.
+        #[cfg(target_family = "wasm")]
+        let device = None;
+        Self {
+            shared,
+            shutdown,
+            cue_rx,
+            device_enabled,
+            sources,
+            listener,
+            event_context,
+            fire_verdicts,
+            next_id,
+            rejections,
+            cue_budget,
+            diag_anchor: Instant::now(),
+            diag_last: Instant::now(),
+            diag_max_pass: Duration::ZERO,
+            diag_previous_pass: Instant::now(),
+            diag_max_gap: Duration::ZERO,
+            resolver: CueResolver::new(),
+            events: crate::event::EventJournal::new(),
+            pending_cues: VecDeque::with_capacity(LOGICAL_INSTANCES),
+            device,
+            device_was_active: false,
+            null_anchor: Instant::now(),
+            null_frame: 0,
+            instances: Vec::with_capacity(LOGICAL_INSTANCES),
+            next_voice: 1,
+            desired: SourceScene {
+                revision: 0,
+                sources: Vec::new(),
+                asserted: Vec::new(),
+            },
+            present_sources: HashSet::with_capacity(LOGICAL_INSTANCES),
+            source_cues: HashMap::with_capacity(crate::sources::SOURCE_HISTORY),
+        }
+    }
+
+    /// One non-blocking control pass.
+    fn pass(&mut self) {
+        let mut diag_last = self.diag_last;
+        let mut diag_max_pass = self.diag_max_pass;
+        let mut diag_previous_pass = self.diag_previous_pass;
+        let mut diag_max_gap = self.diag_max_gap;
+        let mut device_was_active = self.device_was_active;
+        let mut null_anchor = self.null_anchor;
+        let mut null_frame = self.null_frame;
+        let mut next_voice = self.next_voice;
+        let device_enabled = self.device_enabled;
+        let diag_anchor = self.diag_anchor;
+        let mut instances = std::mem::take(&mut self.instances);
+        let mut pending_cues = std::mem::take(&mut self.pending_cues);
+        let mut present_sources = std::mem::take(&mut self.present_sources);
+        let mut source_cues = std::mem::take(&mut self.source_cues);
+        let mut desired = std::mem::replace(
+            &mut self.desired,
+            SourceScene {
+                revision: 0,
+                sources: Vec::new(),
+                asserted: Vec::new(),
+            },
+        );
+        let Self {
+            shared,
+            cue_rx,
+            sources,
+            listener,
+            event_context,
+            fire_verdicts,
+            next_id,
+            rejections,
+            cue_budget,
+            resolver,
+            events,
+            ..
+        } = &mut *self;
+        let mut silence = [[0.0; 2]; QUANTUM];
+        {
         let diag_pass = Instant::now();
         diag_max_gap = diag_max_gap.max(diag_pass.duration_since(diag_previous_pass));
         diag_previous_pass = diag_pass;
         let listener = listener.get();
         events.advance(event_context.get());
         let diag_stage = crate::diagnostics::slow_stage("context", diag_pass);
-        for logical in &mut instances {
+        for logical in instances.iter_mut() {
             let first_us = logical
                 .request
                 .instance
@@ -566,7 +746,7 @@ fn control(
             }
             current
         });
-        for logical in &mut instances {
+        for logical in instances.iter_mut() {
             let Some(binding) = logical.source else {
                 continue;
             };
@@ -617,12 +797,20 @@ fn control(
         }
         apply_source_render_budget(&instances);
         let diag_stage = crate::diagnostics::slow_stage("source_parameters", diag_stage);
+        #[cfg(target_family = "wasm")]
+        shared
+            .device_active
+            .store(crate::web_audio::running(), Ordering::Release);
         let device_active = shared.device_active.load(Ordering::Acquire);
         if device_was_active && !device_active {
             null_anchor = Instant::now();
             null_frame = shared.frame.load(Ordering::Acquire);
         }
         device_was_active = device_active;
+        #[cfg(target_family = "wasm")]
+        if device_active {
+            crate::web_audio::render_and_push(shared);
+        }
         if !device_active {
             let elapsed = (null_anchor.elapsed().as_secs_f64() * f64::from(SAMPLE_RATE)) as u64;
             let target = null_frame.saturating_add(elapsed);
@@ -744,7 +932,7 @@ fn control(
             ) {
                 Ok(true) => {}
                 Ok(false) => {
-                    if std::time::Instant::now() >= work.request.execution.deadline {
+                    if web_time::Instant::now() >= work.request.execution.deadline {
                         work.complete(crate::StartOutcome::Failed(crate::StartFailure::Expired));
                     } else {
                         pending_cues.push_back(work);
@@ -783,7 +971,7 @@ fn control(
             }
             let mut children = Vec::new();
             let step = work.step(
-                &mut resolver,
+                resolver,
                 listener,
                 &mut children,
                 !device_enabled || shared.device_active.load(Ordering::Acquire),
@@ -1060,31 +1248,48 @@ fn control(
                 diag_max_gap = Duration::ZERO;
             }
         }
-        std::thread::park_timeout(Duration::from_millis(2));
+        }
+        self.diag_last = diag_last;
+        self.diag_max_pass = diag_max_pass;
+        self.diag_previous_pass = diag_previous_pass;
+        self.diag_max_gap = diag_max_gap;
+        self.device_was_active = device_was_active;
+        self.null_anchor = null_anchor;
+        self.null_frame = null_frame;
+        self.next_voice = next_voice;
+        self.instances = instances;
+        self.pending_cues = pending_cues;
+        self.present_sources = present_sources;
+        self.source_cues = source_cues;
+        self.desired = desired;
     }
-    for work in pending_cues {
-        work.complete(crate::StartOutcome::Failed(
-            crate::StartFailure::CueRefused(CueFailure::Cancelled),
-        ));
+
+    fn finish(mut self) {
+        for work in std::mem::take(&mut self.pending_cues) {
+            work.complete(crate::StartOutcome::Failed(
+                crate::StartFailure::CueRefused(CueFailure::Cancelled),
+            ));
+        }
+        while let Ok(request) = self.cue_rx.try_recv() {
+            request.reject(CueFailure::Cancelled);
+        }
+        // Join/destroy the device before the last owner can free render payloads.
+        if let Some(device) = self.device.take() {
+            let _ = device.join();
+        }
+        for logical in std::mem::take(&mut self.instances) {
+            logical.request.instance.retire();
+        }
+        let shared = &self.shared;
+        diag::info!(
+            Audio,
+            "audio: control stopped frames={} device_blocks={} null_blocks={} busy_blocks={}",
+            shared.frame.load(Ordering::Acquire),
+            shared.device_blocks.load(Ordering::Relaxed),
+            shared.null_blocks.load(Ordering::Relaxed),
+            shared.busy_blocks.load(Ordering::Relaxed)
+        );
     }
-    while let Ok(request) = cue_rx.try_recv() {
-        request.reject(CueFailure::Cancelled);
-    }
-    // Join/destroy the device before the last owner can free render payloads.
-    if let Some(device) = device {
-        let _ = device.join();
-    }
-    for logical in instances {
-        logical.request.instance.retire();
-    }
-    diag::info!(
-        Audio,
-        "audio: control stopped frames={} device_blocks={} null_blocks={} busy_blocks={}",
-        shared.frame.load(Ordering::Acquire),
-        shared.device_blocks.load(Ordering::Relaxed),
-        shared.null_blocks.load(Ordering::Relaxed),
-        shared.busy_blocks.load(Ordering::Relaxed)
-    );
 }
 
 fn apply_source_render_budget(instances: &[LogicalInstance]) {
