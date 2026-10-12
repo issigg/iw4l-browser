@@ -1,4 +1,48 @@
-# IW4L
+# iw4l-browser
+
+**Modern Warfare 2 (2009) in your browser.** An unofficial, experimental WebAssembly + WebGPU
+port of [IW4L](https://github.com/vladtrc/iw4L), the open-source Rust/Bevy runtime for MW2. It
+runs offline against bots in Chrome, using game files **you already own**. Nothing is uploaded
+and no game assets are included: files are read locally, from a small dev server on your
+machine or from a folder you pick in the browser.
+
+<p align="center">
+  <img src="docs/screenshots/browser-menu.jpg" width="32%" alt="Main menu in the browser">
+  <img src="docs/screenshots/browser-classes.jpg" width="32%" alt="Class selection in the browser">
+  <img src="docs/screenshots/browser-ingame.jpg" width="32%" alt="In a match on Rust, in the browser">
+</p>
+
+## Quick start
+
+You need Chrome with WebGPU, Rust with the `wasm32-unknown-unknown` target, Node.js, and your
+own MW2 Multiplayer install (Steam PC).
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129
+scripts/build-web.sh
+node crates/web/www/serve.mjs "/path/to/your/MW2 folder" 8137
+```
+
+Open <http://localhost:8137/index.html>, or `index.html?map=mp_rust` to skip the menu. Keep
+the tab in the foreground. Full instructions, URL options, how it works and known gaps are in
+[crates/web/README.md](crates/web/README.md).
+
+Status: experimental. Menus, classes, maps, bots, HUD, shadows, audio and gamepad work.
+There is no online play, and the biggest maps run close to the 4 GiB wasm32 memory limit.
+
+## This fork
+
+This is a fork of [vladtrc/iw4L](https://github.com/vladtrc/iw4L) and is not affiliated with
+the upstream project. The browser layer lives in `crates/web` and `crates/web_window`, with
+smaller wasm-specific changes elsewhere. Everything else, including the engine, asset readers
+and gameplay code, is upstream's work and is used under its Apache-2.0 licence; see
+[LICENSE](LICENSE) and [NOTICE](NOTICE). Unofficial fan project, not affiliated with
+Activision or Infinity Ward. Call of Duty and Modern Warfare are trademarks of their owners.
+
+---
+
+## About IW4L (upstream)
 
 IW4L is an open-source runtime for Call of Duty: Modern Warfare 2 (2009), written in
 Rust with [Bevy](https://bevy.org/). Point it at a copy of MW2 you already own and it
@@ -20,9 +64,11 @@ Ops.
 APIs, configuration, caches and the wire protocol change between commits;
 multiplayer peers must run the same build.
 
-## Windows: prebuilt release
+## Desktop (Windows): prebuilt release
 
-1. Download `iw4l-windows.zip` from [Releases](../../releases) and extract it into an
+Upstream's release, not part of this fork.
+
+1. Download `iw4l-windows.zip` from upstream's [Releases](https://github.com/vladtrc/iw4L/releases) and extract it into an
    empty writable folder. The archive password is `t.me/contextrot`.
 2. Launch `iw4l.exe`. It finds MW2 in your Steam libraries and creates a
    `Modern Warfare 2.lnk` shortcut next to itself. For an install outside Steam, create
@@ -32,12 +78,7 @@ For online play, put the `.iw4l-server` file you received from a server operator
 to `iw4l.exe`. With it the game finds that master and updates itself on launch. Details:
 [Windows guide](docs/WINDOWS.md).
 
-## In the browser
-
-An experimental WebAssembly/WebGPU build runs in Chrome against your own game files. See
-[crates/web/README.md](crates/web/README.md).
-
-## Build and run
+## Desktop: build and run
 
 Install Rust through rustup and GNU Make. [Build dependencies](docs/BUILD.md) cover
 Linux's C/C++ toolchain and system libraries, and macOS's Xcode command line tools.
